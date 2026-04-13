@@ -1,0 +1,42 @@
+import streamlit as st
+import pandas as pd
+import time
+
+# 1. Configuration
+st.set_page_config(page_title="100-Mile Race Tracker", layout="wide")
+SHEET_CSV_URL = "PASTE_YOUR_PUBLISHED_CSV_URL_HERE"
+
+st.title("🏃 Live Race Leaderboard")
+st.write("Data updates every 2 minutes.")
+
+# 2. Data Loading Function
+def load_data():
+    # Adding a timestamp to the URL prevents caching issues
+    return pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
+
+try:
+    df = load_data()
+    
+    # 3. Search Section
+    st.sidebar.header("Search Runner")
+    search_query = st.sidebar.text_input("Enter Bib # or Name")
+
+    if search_query:
+        # Searching across Bib and Name columns (adjust names to match your sheet headers)
+        results = df[df.astype(str).apply(lambda x: search_query.lower() in x.str.lower().values, axis=1)]
+        if not results.empty:
+            for _, runner in results.iterrows():
+                st.sidebar.success(f"**{runner['Name']}** (Bib: {runner['Bib']})")
+                st.sidebar.write(f"📍 Last Station: {runner['Last Aid Station']}")
+                st.sidebar.write(f"🛣️ Miles Done: {runner['Miles']}")
+        else:
+            st.sidebar.warning("No runner found.")
+
+    # 4. Leaderboard Section
+    st.subheader("Current Standings")
+    # Sort by Miles (Descending) and Time (Ascending)
+    leaderboard = df.sort_values(by=['Miles', 'Time'], ascending=[False, True])
+    st.dataframe(leaderboard, use_container_width=True)
+
+except Exception as e:
+    st.error("Waiting for race data to initialize...")
