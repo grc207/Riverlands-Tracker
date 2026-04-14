@@ -4,7 +4,7 @@ import time
 
 # 1. Configuration
 st.set_page_config(page_title="100-Mile Race Tracker", layout="wide")
-SHEET_CSV_URL = "PASTE_YOUR_PUBLISHED_CSV_URL_HERE"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/edit?usp=sharing"
 
 st.title("🏃 Live Race Leaderboard")
 st.write("Data updates every 2 minutes.")
