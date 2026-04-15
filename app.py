@@ -4,7 +4,7 @@ import datetime
 import time
 
 # 1. Setup
-st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
+st.set_page_config(page_title="Riverlands 100 Leaderboard", layout="wide")
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
 
@@ -25,14 +25,12 @@ def get_status(row):
     total_miles = 0.0
     current_loop = 1
     
-    # Check for DNF
     if row.astype(str).str.contains('DNF|dnf').any():
-        return "DNF", 0.0, "Dropped", 0
+        return "DNF", -1.0, "Dropped", 0 # -1 miles keeps DNFs at bottom
 
-    # Iterate through columns to find furthest progress
     for i, (col_name, val) in enumerate(times.items()):
         if pd.notnull(val) and str(val).strip() != "":
-            last_val = str(val)
+            last_val = str(val).strip()
             last_loc = str(col_name).split('.')[0].strip()
             
             loop_index = i // 4 
@@ -42,7 +40,6 @@ def get_status(row):
             if last_loc in MILEAGE_MAP:
                 total_miles = base_mileage + MILEAGE_MAP[last_loc]
 
-    # Change status to Finished if they complete the 4th Start/Finish
     if total_miles >= 100.0:
         last_loc = "Finished!"
 
@@ -54,28 +51,37 @@ def load_data():
     df.columns = [str(c).strip() for c in df.columns]
     df['Bib'] = pd.to_numeric(df['Bib'], errors='coerce')
     
-    # Filter for 100-milers
     soloists = df[df['Bib'] >= 300].copy()
     
     results = []
     for _, row in soloists.iterrows():
         loc, miles, l_time, loop = get_status(row)
+        
+        # Create a 'Sort Time' - converts '1:30 PM' type strings to something sortable
+        # If the time is empty, we set it to a very late time so they don't jump to rank 1
+        try:
+            sort_time = pd.to_datetime(l_time).time() if l_time else datetime.time(23, 59)
+        except:
+            sort_time = l_time # Fallback to string if format is weird
+
         results.append({
             "Runner": row['Team/Runner'],
             "Bib": int(row['Bib']),
             "Last Seen": loc,
             "Miles": miles,
             "Station Time": l_time,
+            "SortTime": sort_time,
             "Loop": loop
         })
     
     full_df = pd.DataFrame(results)
     
-    # --- GLOBAL SORTING & RANKING (Happens before any search) ---
-    # Sort by Miles (Descending) then Station Time (Ascending)
-    full_df = full_df.sort_values(by=['Miles', 'Station Time'], ascending=[False, True])
+    # --- CRITICAL SORTING ---
+    # Sort by Miles DESCENDING (most miles at top)
+    # Then by SortTime ASCENDING (earliest time at top)
+    full_df = full_df.sort_values(by=['Miles', 'SortTime'], ascending=[False, True])
     
-    # Assign actual Rank based on this global sort
+    # Assign Ranks
     full_df.insert(0, 'Rank', range(1, len(full_df) + 1))
     
     return full_df
@@ -83,7 +89,6 @@ def load_data():
 # 3. UI
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
-# Race Clock
 now = datetime.datetime.now()
 if now > START_TIME:
     elapsed = now - START_TIME
@@ -93,13 +98,11 @@ if now > START_TIME:
 else:
     st.info("Race starts May 2nd at 6:00 AM EST")
 
-# Search (Matches partial names/last names)
-query = st.text_input("Search by Name or Bib #", placeholder="Enter bib or any part of name...").lower()
+query = st.text_input("Search by Name or Bib #", placeholder="Search runners...").lower()
 
 try:
     master_df = load_data()
     
-    # Filter results for display based on search
     if query:
         display_df = master_df[
             master_df['Runner'].str.lower().str.contains(query, na=False) | 
@@ -108,9 +111,11 @@ try:
     else:
         display_df = master_df
 
-    # 4. Final Display Formatting
+    # Drop the hidden SortTime column before displaying
+    final_view = display_df.drop(columns=['SortTime'])
+
     st.dataframe(
-        display_df, 
+        final_view, 
         column_config={
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
             "Rank": "Pos",
@@ -121,4 +126,4 @@ try:
     )
 
 except Exception as e:
-    st.error("Updating leaderboard...")
+    st.error("Leaderboard is updating... Check your data format if this persists.")
