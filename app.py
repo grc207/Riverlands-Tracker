@@ -14,8 +14,6 @@ START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
 MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
 
-# --- HELPER FUNCTIONS ---
-
 def fuzzy_match(query, target):
     query, target = str(query).lower(), str(target).lower()
     if query in target: return True 
@@ -29,7 +27,6 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         day = 2
         if current_loop >= 3 and t.hour < 14: day = 3
         if last_loc == "Finished!" and t.hour < 14: day = 3
-        
         actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
         total_seconds = int(delta.total_seconds())
@@ -40,50 +37,46 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         return None, None
 
 def get_status(row, mode):
-    times = row.iloc[2:] 
+    # Skip Team/Runner and the first Bib column
+    station_data = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    max_allowed_laps = 4 if mode == "100 Miler" else 5
+    
+    # Track how many times we've seen a specific station type to handle the loop count
+    # This ignores "Bib" columns or empty spacers entirely
+    station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Start/Finish": 0}
     
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
-    for i, (col_name, val) in enumerate(times.items()):
+    for col_name, val in station_data.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
+        # Only process if there is a time and it's not a DNF marker
         if val_str != "" and "dnf" not in val_str.lower():
-            loop_idx = i // 4
-            if loop_idx >= max_allowed_laps:
-                break
+            # Normalize header (e.g., 'Start/Finish.4' -> 'Start/Finish')
+            clean_name = str(col_name).split('.')[0].strip()
+            
+            if clean_name in station_counts:
+                station_counts[clean_name] += 1
+                loop_idx = station_counts[clean_name] - 1
                 
-            has_data, last_val = True, val_str
-            
-            # --- THE NORMALIZER ---
-            # This strips "Start/Finish.4" down to "Start/Finish"
-            raw_loc = str(col_name).split('.')[0].strip()
-            last_loc = raw_loc
-            current_loop = loop_idx + 1
-            
-            if last_loc in mileage_map:
-                total_miles = (loop_idx * loop_dist) + mileage_map[last_loc]
+                has_data = True
+                last_val = val_str
+                last_loc = clean_name
+                current_loop = station_counts[clean_name]
+                total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
 
-    # FORCE RELAY FINISH 
-    # If it's Relay, and they have data in the final station slot (index 19)
-    # Or if the math has naturally reached 100
-    if total_miles >= 100.0 or (mode == "Relay" and last_loc == "Start/Finish" and current_loop == 5):
-        status_text = "Finished!"
-        total_miles = 100.0
-        sort_weight = 100.0
-        current_loop = max_allowed_laps
+    # Final logic checks
+    if total_miles >= 100.0:
+        status_text, total_miles, sort_weight = "Finished!", 100.0, 100.0
     else:
-        status_text = last_loc
-        sort_weight = total_miles
+        status_text, sort_weight = last_loc, total_miles
 
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
     
     elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
-    
     if is_manual_dnf:
         status_text, sort_weight = "DNF", -1.0
 
@@ -122,7 +115,6 @@ def load_data(mode):
     return full_df
 
 # --- UI ---
-
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
@@ -138,7 +130,6 @@ else:
 
 try:
     master_df = load_data(view_mode)
-    
     if query and view_mode == "100 Miler":
         mask = master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)
         display_df = master_df[mask]
