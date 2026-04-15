@@ -7,7 +7,7 @@ import time
 st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
 
 # REPLACE THIS WITH YOUR PUBLISHED CSV URL
-SHEET_CSV_URL = "YOUR_CSV_URL_HERE"
+SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/edit?gid=0#gid=0"
 
 # Race Constants
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
