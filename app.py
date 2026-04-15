@@ -25,7 +25,7 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
     try:
         t = pd.to_datetime(str(station_time_str).strip()).time()
         day = 2
-        # If far into race (Loop 3+) and time is early, it's Sunday
+        # Use Loop 3 as the threshold for Sunday morning times
         if current_loop >= 3 and t.hour < 14: day = 3
         if last_loc == "Finished!" and t.hour < 14: day = 3
         
@@ -39,36 +39,44 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         return None, None
 
 def get_status(row, mode):
+    # row[0] = Name, row[1] = Bib. Station data starts at row[2]
     times = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
+    max_loops = 4 if mode == "100 Miler" else 5
     
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
-    # We iterate through all columns. For Relay, we look for 20 segments (5 loops * 4).
     for i, (col_name, val) in enumerate(times.items()):
         val_str = str(val).strip() if pd.notnull(val) else ""
         if val_str != "" and "dnf" not in val_str.lower():
+            loop_idx = i // 4
+            
+            # Capping logic to prevent Lap 6 or Lap 5 (for solo)
+            if loop_idx >= max_loops:
+                break
+                
             has_data, last_val = True, val_str
             last_loc = str(col_name).split('.')[0].strip()
             
-            loop_idx = i // 4
+            # If the location is Start/Finish, it's the completion of the current loop_idx
+            # i//4 works perfectly for the first 3 stations, but we lock Start/Finish to the loop it completes
             current_loop = loop_idx + 1
             
             if last_loc in mileage_map:
                 total_miles = (loop_idx * loop_dist) + mileage_map[last_loc]
 
-    # Status check
-    status_text = last_loc
-    sort_weight = total_miles
-    
-    # Force finish if they hit 100 miles
+    # Force "Finished!" status at 100 miles
     if total_miles >= 100.0:
         status_text = "Finished!"
         total_miles = 100.0
         sort_weight = 100.0
+        current_loop = max_loops
+    else:
+        status_text = last_loc
+        sort_weight = total_miles
 
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
@@ -89,7 +97,6 @@ def load_data(mode):
     if mode == "100 Miler":
         sub_df = df[df['Bib'] >= 300].copy()
     else:
-        # Relay logic: filter for Bibs under 300 and remove empty rows
         sub_df = df[df['Bib'] < 300].copy()
         sub_df = sub_df[sub_df['Team/Runner'].notna()]
     
@@ -102,7 +109,7 @@ def load_data(mode):
             "Status": status,
             "Miles": miles,
             "SortWeight": s_weight,
-            "Last Station": l_time,
+            "Time": l_time,
             "Elapsed": el_str,
             "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
@@ -114,7 +121,6 @@ def load_data(mode):
     return full_df
 
 # --- UI ---
-
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
@@ -141,7 +147,7 @@ try:
         column_config={
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
             "Elapsed": "Race Time",
-            "Last Station": "Time Recorded"
+            "Time": "Last Station"
         },
         use_container_width=True, hide_index=True
     )
