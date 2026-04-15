@@ -19,26 +19,36 @@ def fuzzy_match(query, target):
     if query in target: return True 
     return SequenceMatcher(None, query, target).ratio() > 0.7 
 
-def calculate_elapsed(station_time_str):
-    """Calculates continuous elapsed time from 6am Saturday through Sunday."""
+def calculate_elapsed(station_time_str, current_loop, last_loc):
+    """
+    Uses the loop number to determine if the time is Saturday or Sunday.
+    Loops 1-2 are Saturday. Loop 4/Finish are Sunday if the time is early.
+    """
     if not station_time_str or str(station_time_str).strip() == "":
         return None, None
     
     try:
-        # Parse the time string from the sheet
+        # Parse the time (e.g., '6:07' or '6:07 AM')
         t = pd.to_datetime(str(station_time_str).strip()).time()
         
-        # LOGIC: If the hour is between 6:00 AM and 11:59 PM, it's Day 1 (May 2)
-        # If the hour is between 12:00 AM and 2:02 PM, it's Day 2 (May 3)
-        if t.hour >= 6:
-            actual_dt = datetime.datetime(2026, 5, 2, t.hour, t.minute)
-        else:
-            actual_dt = datetime.datetime(2026, 5, 3, t.hour, t.minute)
+        # DEFAULT: Assume Day 1 (Saturday, May 2nd)
+        day = 2
         
+        # LOGIC SHIFT: 
+        # If they are on Loop 3, 4, or Finished AND the time is between 12:00 AM and 2:02 PM
+        # we know it MUST be Sunday (Day 2 of the race).
+        if current_loop >= 3 and t.hour < 14: 
+            day = 3
+        
+        # Special case: If they 'Finished' and the time is like 7:00, that's Sunday morning.
+        if last_loc == "Finished!" and t.hour < 14:
+            day = 3
+
+        actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
         total_seconds = int(delta.total_seconds())
         
-        # Format for display (e.g. 26h 15m)
+        # Format display string
         hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
         
@@ -51,6 +61,7 @@ def get_status(row):
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
+    # Find the furthest data point
     for i, (col_name, val) in enumerate(times.items()):
         val_str = str(val).strip() if pd.notnull(val) else ""
         if val_str != "" and "dnf" not in val_str.lower():
@@ -66,14 +77,14 @@ def get_status(row):
     
     if total_miles >= 100.0:
         status_text = "Finished!"
-        sort_weight = 100.0 # Keep finishers at the top
+        sort_weight = 100.0
     
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
     
-    elapsed_str, elapsed_seconds = calculate_elapsed(last_val)
+    # NEW: Pass current_loop to calculate_elapsed
+    elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
     
-    # Apply Cutoff DNF or Manual DNF
     if is_manual_dnf or (elapsed_seconds and elapsed_seconds > CUTOFF_DELTA.total_seconds() and total_miles < 100.0):
         status_text, sort_weight = "DNF", -1.0
 
@@ -102,8 +113,7 @@ def load_data():
             "Lap": loop
         })
     
-    # PRIMARY SORT: Miles (Descending)
-    # SECONDARY SORT: SortSeconds (Ascending - faster time wins)
+    # Sort by progress then by total time elapsed
     full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
     
     full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
@@ -123,11 +133,8 @@ try:
     else:
         display_df = master_df
 
-    # Display cleanup
-    final_output = display_df.drop(columns=['SortWeight', 'SortSeconds'])
-    
     st.dataframe(
-        final_output,
+        display_df.drop(columns=['SortWeight', 'SortSeconds']),
         column_config={
             "Miles": st.column_config.NumberColumn("Miles", format="%.1f"),
             "Race Time": "Elapsed",
@@ -136,4 +143,4 @@ try:
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error("Updating leaderboard...")
+    st.error("Leaderboard is updating...")
