@@ -124,7 +124,7 @@ def load_data(mode):
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
-           "All information may not be timely or accurate." "Some updates may take a few minutes to refresh")
+           "All information may not be timely or accurate.    " "Some updates may take a few minutes to refresh.   ")
 
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
