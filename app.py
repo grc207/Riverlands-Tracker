@@ -9,29 +9,37 @@ st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
+CUTOFF_DELTA = datetime.timedelta(hours=32, minutes=2)
 
 # Mileage Constants
 MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
 
+# --- HELPER FUNCTIONS ---
+
 def fuzzy_match(query, target):
+    """Broad search for partial names and typo tolerance."""
     query, target = str(query).lower(), str(target).lower()
     if query in target: return True 
     return SequenceMatcher(None, query, target).ratio() > 0.7 
 
 def calculate_elapsed(station_time_str, current_loop, last_loc):
+    """Calculates continuous elapsed time from 6am start, aware of day rollovers."""
     if not station_time_str or str(station_time_str).strip() == "":
         return None, None
     try:
+        # Standardize time string parsing
         t = pd.to_datetime(str(station_time_str).strip()).time()
+        
+        # Day 2 logic: If they are on Loop 3+ and time is early morning, it's Sunday
         day = 2
-        # Use Loop 3 as the threshold for Sunday morning times
         if current_loop >= 3 and t.hour < 14: day = 3
         if last_loc == "Finished!" and t.hour < 14: day = 3
         
         actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
         total_seconds = int(delta.total_seconds())
+        
         hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
         return f"{hours}h {minutes:02d}m", total_seconds
@@ -39,13 +47,14 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         return None, None
 
 def get_status(row, mode):
-    # row[0] = Name, row[1] = Bib. Station data starts at row[2]
+    """Calculates mileage, status, and rank weight based on 100M vs Relay logic."""
+    # Data starts at index 2 (Bib is 1, Name is 0)
     times = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    max_loops = 4 if mode == "100 Miler" else 5
+    max_allowed_laps = 4 if mode == "100 Miler" else 5
     
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
@@ -54,36 +63,40 @@ def get_status(row, mode):
         if val_str != "" and "dnf" not in val_str.lower():
             loop_idx = i // 4
             
-            # Capping logic to prevent Lap 6 or Lap 5 (for solo)
-            if loop_idx >= max_loops:
+            # Guardrail to prevent phantom columns triggering extra laps
+            if loop_idx >= max_allowed_laps:
                 break
                 
             has_data, last_val = True, val_str
             last_loc = str(col_name).split('.')[0].strip()
-            
-            # If the location is Start/Finish, it's the completion of the current loop_idx
-            # i//4 works perfectly for the first 3 stations, but we lock Start/Finish to the loop it completes
             current_loop = loop_idx + 1
             
             if last_loc in mileage_map:
                 total_miles = (loop_idx * loop_dist) + mileage_map[last_loc]
 
-    # Force "Finished!" status at 100 miles
+    # Final logic checks
     if total_miles >= 100.0:
         status_text = "Finished!"
         total_miles = 100.0
         sort_weight = 100.0
-        current_loop = max_loops
+        current_loop = max_allowed_laps
     else:
         status_text = last_loc
         sort_weight = total_miles
+
+    # Safety catch for the final Relay segment (96.5 -> 100)
+    if mode == "Relay" and status_text == "Start/Finish" and current_loop == 5:
+        status_text = "Finished!"
+        total_miles = 100.0
+        sort_weight = 100.0
 
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
     
     elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
     
-    if is_manual_dnf:
+    # Auto-DNF if over 32:02 clock and not finished
+    if is_manual_dnf or (elapsed_seconds and elapsed_seconds > 115320 and total_miles < 100.0):
         status_text, sort_weight = "DNF", -1.0
 
     return status_text, total_miles, sort_weight, last_val, current_loop, elapsed_str, elapsed_seconds
@@ -97,6 +110,7 @@ def load_data(mode):
     if mode == "100 Miler":
         sub_df = df[df['Bib'] >= 300].copy()
     else:
+        # Relay teams are Bibs < 300
         sub_df = df[df['Bib'] < 300].copy()
         sub_df = sub_df[sub_df['Team/Runner'].notna()]
     
@@ -109,20 +123,26 @@ def load_data(mode):
             "Status": status,
             "Miles": miles,
             "SortWeight": s_weight,
-            "Time": l_time,
-            "Elapsed": el_str,
+            "Last Station": l_time,
+            "Race Time": el_str,
             "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
         })
     
+    # Sort by distance (Weight) then by speed (Seconds)
     full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
+    
+    # Apply Ranks (Pos) but exclude DNS/DNF
     full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
     full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
+    
     return full_df
 
-# --- UI ---
+# --- UI LAYER ---
+
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
+# Multi-line Disclaimer
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate.\n\n"
         "Some updates may take a few minutes to refresh.")
@@ -130,7 +150,7 @@ st.info("**Disclaimer:** This is an independent project and is not maintained by
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
 if view_mode == "100 Miler":
-    query = st.text_input("Search Name or Bib", placeholder="Search runners...")
+    query = st.text_input("Search Name or Bib", placeholder="Try 'Collins' or '305'...")
 else:
     query = ""
 
@@ -143,14 +163,19 @@ try:
     else:
         display_df = master_df
 
+    # UI Cleanup
+    final_output = display_df.drop(columns=['SortWeight', 'SortSeconds'])
+    
     st.dataframe(
-        display_df.drop(columns=['SortWeight', 'SortSeconds']),
+        final_output,
         column_config={
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
-            "Elapsed": "Race Time",
-            "Time": "Last Station"
+            "Pos": st.column_config.NumberColumn("Pos", format="%d"),
+            "Race Time": "Elapsed",
+            "Last Station": "Time of Day"
         },
-        use_container_width=True, hide_index=True
+        use_container_width=True, 
+        hide_index=True
     )
 except Exception as e:
-    st.error("Leaderboard is updating...")
+    st.error("Leaderboard is updating... Please wait.")
