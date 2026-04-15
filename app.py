@@ -14,8 +14,6 @@ START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
 MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
 
-# --- HELPER FUNCTIONS ---
-
 def fuzzy_match(query, target):
     query, target = str(query).lower(), str(target).lower()
     if query in target: return True 
@@ -27,6 +25,7 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
     try:
         t = pd.to_datetime(str(station_time_str).strip()).time()
         day = 2
+        # If far into race (Loop 3+) and time is early, it's Sunday
         if current_loop >= 3 and t.hour < 14: day = 3
         if last_loc == "Finished!" and t.hour < 14: day = 3
         
@@ -45,34 +44,32 @@ def get_status(row, mode):
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    max_loops = 4 if mode == "100 Miler" else 5
     
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
+    # We iterate through all columns. For Relay, we look for 20 segments (5 loops * 4).
     for i, (col_name, val) in enumerate(times.items()):
         val_str = str(val).strip() if pd.notnull(val) else ""
         if val_str != "" and "dnf" not in val_str.lower():
-            # Stop processing if we exceed the allowed number of loops for the mode
-            loop_idx = i // 4
-            if loop_idx >= max_loops:
-                break
-                
             has_data, last_val = True, val_str
             last_loc = str(col_name).split('.')[0].strip()
+            
+            loop_idx = i // 4
             current_loop = loop_idx + 1
             
             if last_loc in mileage_map:
                 total_miles = (loop_idx * loop_dist) + mileage_map[last_loc]
 
+    # Status check
     status_text = last_loc
     sort_weight = total_miles
     
-    # Check for Finish (100 miles for both)
+    # Force finish if they hit 100 miles
     if total_miles >= 100.0:
         status_text = "Finished!"
+        total_miles = 100.0
         sort_weight = 100.0
-        current_loop = max_loops
-    
+
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
     
@@ -92,8 +89,9 @@ def load_data(mode):
     if mode == "100 Miler":
         sub_df = df[df['Bib'] >= 300].copy()
     else:
+        # Relay logic: filter for Bibs under 300 and remove empty rows
         sub_df = df[df['Bib'] < 300].copy()
-        sub_df = sub_df[sub_df['Team/Runner'].notna()] 
+        sub_df = sub_df[sub_df['Team/Runner'].notna()]
     
     results = []
     for _, row in sub_df.iterrows():
@@ -104,7 +102,7 @@ def load_data(mode):
             "Status": status,
             "Miles": miles,
             "SortWeight": s_weight,
-            "Time of Day": l_time,
+            "Last Station": l_time,
             "Elapsed": el_str,
             "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
@@ -115,12 +113,12 @@ def load_data(mode):
     full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
     return full_df
 
-# --- UI BUILD ---
+# --- UI ---
 
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
-           "All information may not be timely or accurate, and should not be used as the official race tracker.")
+           "All information may not be timely or accurate.")
 
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
@@ -128,7 +126,6 @@ if view_mode == "100 Miler":
     query = st.text_input("Search Name or Bib", placeholder="Search runners...")
 else:
     query = ""
-    st.write("### Relay Team Standings")
 
 try:
     master_df = load_data(view_mode)
@@ -142,11 +139,11 @@ try:
     st.dataframe(
         display_df.drop(columns=['SortWeight', 'SortSeconds']),
         column_config={
-            "Miles": st.column_config.NumberColumn("Miles", format="%.1f"),
+            "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
             "Elapsed": "Race Time",
-            "Time of Day": "Last Station"
+            "Last Station": "Time Recorded"
         },
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error("Updating leaderboard...")
+    st.error("Leaderboard is updating...")
