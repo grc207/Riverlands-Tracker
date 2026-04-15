@@ -20,22 +20,25 @@ def fuzzy_match(query, target):
     return SequenceMatcher(None, query, target).ratio() > 0.7 
 
 def calculate_elapsed(station_time_str):
-    """Calculates hours and minutes from 6am start."""
+    """Calculates continuous elapsed time from 6am Saturday through Sunday."""
     if not station_time_str or str(station_time_str).strip() == "":
         return None, None
     
     try:
-        # Convert the string from the sheet to a time object
-        # This handles common formats like '2:30 PM' or '14:30'
-        t = pd.to_datetime(station_time_str).time()
+        # Parse the time string from the sheet
+        t = pd.to_datetime(str(station_time_str).strip()).time()
         
-        # We assume the time belongs to the race window (May 2nd or May 3rd)
-        # If the time is < 6:00 AM, we assume it's the next day (May 3rd)
-        day = 2 if t.hour >= 6 else 3
-        actual_time = datetime.datetime(2026, 5, day, t.hour, t.minute)
+        # LOGIC: If the hour is between 6:00 AM and 11:59 PM, it's Day 1 (May 2)
+        # If the hour is between 12:00 AM and 2:02 PM, it's Day 2 (May 3)
+        if t.hour >= 6:
+            actual_dt = datetime.datetime(2026, 5, 2, t.hour, t.minute)
+        else:
+            actual_dt = datetime.datetime(2026, 5, 3, t.hour, t.minute)
         
-        delta = actual_time - START_TIME
+        delta = actual_dt - START_TIME
         total_seconds = int(delta.total_seconds())
+        
+        # Format for display (e.g. 26h 15m)
         hours, remainder = divmod(total_seconds, 3600)
         minutes, _ = divmod(remainder, 60)
         
@@ -63,13 +66,14 @@ def get_status(row):
     
     if total_miles >= 100.0:
         status_text = "Finished!"
-        sort_weight = 100.0
+        sort_weight = 100.0 # Keep finishers at the top
     
     if not has_data:
         status_text, sort_weight = "DNS", -2.0
     
-    # Check elapsed for cutoff DNF
     elapsed_str, elapsed_seconds = calculate_elapsed(last_val)
+    
+    # Apply Cutoff DNF or Manual DNF
     if is_manual_dnf or (elapsed_seconds and elapsed_seconds > CUTOFF_DELTA.total_seconds() and total_miles < 100.0):
         status_text, sort_weight = "DNF", -1.0
 
@@ -93,24 +97,21 @@ def load_data():
             "Miles": miles,
             "SortWeight": s_weight,
             "Station Time": l_time,
-            "Elapsed": el_str,
-            "SortTime": el_sec if el_sec is not None else 999999,
+            "Race Time": el_str,
+            "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
         })
     
-    full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortTime'], ascending=[False, True])
+    # PRIMARY SORT: Miles (Descending)
+    # SECONDARY SORT: SortSeconds (Ascending - faster time wins)
+    full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
+    
     full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
     full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
     return full_df
 
 # 3. UI
-st.title("🏃 Riverlands 100 Live Leaderboard")
-
-# Global Race Clock
-now = datetime.datetime.now()
-if now > START_TIME:
-    elapsed_now = now - START_TIME
-    st.metric("Total Race Time", f"{int(elapsed_now.total_seconds()//3600)}h {int((elapsed_now.total_seconds()//60)%60)}m")
+st.title("🏃 Riverlands 100 Official Leaderboard")
 
 query = st.text_input("Search Name or Bib", placeholder="Search runners...")
 
@@ -123,16 +124,16 @@ try:
         display_df = master_df
 
     # Display cleanup
-    display_df = display_df.drop(columns=['SortWeight', 'SortTime'])
+    final_output = display_df.drop(columns=['SortWeight', 'SortSeconds'])
     
     st.dataframe(
-        display_df,
+        final_output,
         column_config={
             "Miles": st.column_config.NumberColumn("Miles", format="%.1f"),
-            "Elapsed": "Race Time",
+            "Race Time": "Elapsed",
             "Station Time": "Time of Day"
         },
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error("Leaderboard is updating...")
+    st.error("Updating leaderboard...")
