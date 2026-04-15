@@ -89,7 +89,7 @@ def load_data():
 # UI
 st.title("🏃 Riverlands 100 Live Leaderboard")
 
-query = st.text_input("Search Name or Bib", placeholder="Try 'Collins' or '305'...")
+query = st.text_input("Search Name or Bib", placeholder="Try 'Partial Name' or '305'...")
 
 try:
     master_df = load_data()
