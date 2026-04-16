@@ -4,15 +4,25 @@ import datetime
 import time
 from difflib import SequenceMatcher
 
-# 1. Setup
+# 1. Setup & Constants
 st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
+RACE_LIMIT_HOURS = 32
 
 # Mileage Constants
 MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
+
+# --- HELPER FUNCTIONS ---
+
+def format_delta_hhh(delta):
+    """Formats a timedelta into HHH:MM:SS."""
+    total_seconds = int(delta.total_seconds())
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
 
 def fuzzy_match(query, target):
     query, target = str(query).lower(), str(target).lower()
@@ -36,54 +46,60 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
     except:
         return None, None
 
-def get_status(row, mode):
-    # Skip Team/Runner and the first Bib column
+def get_status(row, mode, now):
     station_data = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    
-    # Track how many times we've seen a specific station type to handle the loop count
-    # This ignores "Bib" columns or empty spacers entirely
     station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Start/Finish": 0}
     
+    # Fail-safe logic
+    gap_counter = 0 
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
     for col_name, val in station_data.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
-        # Only process if there is a time and it's not a DNF marker
-        if val_str != "" and "dnf" not in val_str.lower():
-            # Normalize header (e.g., 'Start/Finish.4' -> 'Start/Finish')
-            clean_name = str(col_name).split('.')[0].strip()
-            
-            if clean_name in station_counts:
+        clean_name = str(col_name).split('.')[0].strip()
+
+        if clean_name in station_counts:
+            if val_str != "" and "dnf" not in val_str.lower():
+                gap_counter = 0 # Reset gap
                 station_counts[clean_name] += 1
                 loop_idx = station_counts[clean_name] - 1
-                
-                has_data = True
-                last_val = val_str
-                last_loc = clean_name
+                has_data, last_val, last_loc = True, val_str, clean_name
                 current_loop = station_counts[clean_name]
                 total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
+            else:
+                gap_counter += 1
+                if gap_counter >= 2: # FAIL-SAFE TRIGGERED
+                    break
+        else:
+            continue
 
-    # Final logic checks
+    # 1. Determine Status Text
     if total_miles >= 100.0:
-        status_text, total_miles, sort_weight = "Finished!", 100.0, 100.0
-    else:
+        status_text, sort_weight = "Finished!", 100.0
+    elif has_data:
         status_text, sort_weight = last_loc, total_miles
+    else:
+        # NEW: Time-based logic for runners with no check-ins
+        if now < START_TIME:
+            status_text = "Starts May 2nd @ 6am"
+        elif now < (START_TIME + datetime.timedelta(hours=1.5)):
+            status_text = "Race Started"
+        else:
+            status_text = "DNS"
+        sort_weight = -2.0
 
-    if not has_data:
-        status_text, sort_weight = "DNS", -2.0
-    
-    elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
     if is_manual_dnf:
         status_text, sort_weight = "DNF", -1.0
-
+    
+    elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
     return status_text, total_miles, sort_weight, last_val, current_loop, elapsed_str, elapsed_seconds
 
 @st.cache_data(ttl=30)
-def load_data(mode):
+def load_data(mode, now):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     df['Bib'] = pd.to_numeric(df['Bib'], errors='coerce')
@@ -96,14 +112,14 @@ def load_data(mode):
     
     results = []
     for _, row in sub_df.iterrows():
-        status, miles, s_weight, l_time, loop, el_str, el_sec = get_status(row, mode)
+        status, miles, s_weight, l_time, loop, el_str, el_sec = get_status(row, mode, now)
         results.append({
             "Team/Runner": row['Team/Runner'],
             "Bib": int(row['Bib']) if pd.notnull(row['Bib']) else 0,
             "Status": status,
             "Miles": miles,
             "SortWeight": s_weight,
-            "Recorded Time": l_time,
+            "Time": l_time,
             "Elapsed": el_str,
             "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
@@ -115,7 +131,26 @@ def load_data(mode):
     return full_df
 
 # --- UI ---
+
+# Header & Timer Logic
+now = datetime.datetime.now()
+
 st.title("🏃 Riverlands 100 Live Leaderboard")
+
+# Dynamic Clock Container
+with st.container():
+    if now < START_TIME:
+        time_diff = START_TIME - now
+        st.subheader(f"⏱️ {format_delta_hhh(time_diff)}")
+        st.write("**Hours Until Race Day!**")
+    else:
+        elapsed_diff = now - START_TIME
+        # Cap at 32 hours
+        if elapsed_diff > datetime.timedelta(hours=RACE_LIMIT_HOURS):
+            elapsed_diff = datetime.timedelta(hours=RACE_LIMIT_HOURS)
+        
+        st.subheader(f"⏱️ {format_delta_hhh(elapsed_diff)}")
+        st.write("**Elapsed Race Time**")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate.\n\n"
@@ -129,7 +164,8 @@ else:
     query = ""
 
 try:
-    master_df = load_data(view_mode)
+    master_df = load_data(view_mode, now)
+    
     if query and view_mode == "100 Miler":
         mask = master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)
         display_df = master_df[mask]
@@ -142,9 +178,9 @@ try:
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
             "Pos": st.column_config.NumberColumn("Pos", format="%d"),
             "Elapsed": "Race Time",
-            "Recorded Time": "Time of Day"
+            "Time": "Time of Day"
         },
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error("Leaderboard is updating...")
+    st.error("Updating leaderboard...")
