@@ -135,11 +135,11 @@ def load_data(mode, now):
 # Header & Timer Logic
 now = datetime.datetime.now()
 
-# 1. Display the Logo (centered)
-st.image("Riverlands Logo.jpg", use_container_width=True)
+    # 1. Display the Logo (centered)
+    st.image("Riverlands Logo.jpg", use_container_width=True)
 
-# 2. Display the Title (removing the runner emoji)
-st.title("Riverlands 100 Live Leaderboard")
+    # 2. Display the Title (removing the runner emoji)
+    st.title("Riverlands 100 Live Leaderboard")
 
 # Dynamic Clock Container
 with st.container():
