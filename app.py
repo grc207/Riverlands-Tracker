@@ -72,7 +72,7 @@ def get_status(row, mode, now):
                 total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
             else:
                 gap_counter += 1
-                if gap_counter >= 2: # FAIL-SAFE TRIGGERED
+                if gap_counter >= 3: # FAIL-SAFE TRIGGERED
                     break
         else:
             continue
