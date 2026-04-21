@@ -157,7 +157,7 @@ with st.container():
         st.write("**Elapsed Race Time**")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
-        "All information may not be timely or accurate and should NOT be accepted as official!.\n\n"
+        "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
