@@ -136,7 +136,7 @@ def load_data(mode, now):
 now = datetime.datetime.now()
 
 # 1. Display the Logo (centered)
-st.image("logo.jpg", use_container_width=True)
+st.image("logo.jpg", use_container_width=False)
 
 # 2. Display the Title (removing the runner emoji)
 st.title("Riverlands 100 Live Leaderboard")
