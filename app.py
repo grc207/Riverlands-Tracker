@@ -135,7 +135,7 @@ def load_data(mode, now):
 # Header & Timer Logic
 now = datetime.datetime.now()
 
-    st.title("🏃 Riverlands 100 Live Leaderboard")
+st.title("🏃 Riverlands 100 Live Leaderboard")
 
 # Dynamic Clock Container
 with st.container():
