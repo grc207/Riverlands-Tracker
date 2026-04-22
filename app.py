@@ -8,10 +8,16 @@ from difflib import SequenceMatcher
 st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
+
+# CONFIRMED 2026 DATES
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
 RACE_LIMIT_HOURS = 32
+GRACE_PERIOD_SECONDS = 60 
+# Total seconds allowed: (32 * 3600) + 60 = 115260
+MAX_ALLOWED_SECONDS = (RACE_LIMIT_HOURS * 3600) + GRACE_PERIOD_SECONDS
+END_TIME = START_TIME + datetime.timedelta(hours=RACE_LIMIT_HOURS)
 
-# Mileage Constants & Order for prediction
+# Mileage Constants
 STATION_ORDER = ["Start", "Middle out", "Conant Rd", "Middle back", "Start/Finish"]
 MAP_100 = {"Start": 0.0, "Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
 MAP_RELAY = {"Start": 0.0, "Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
@@ -37,6 +43,7 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         day = 2
         if current_loop >= 3 and t.hour < 14: day = 3
         if last_loc == "Finished!" and t.hour < 14: day = 3
+        
         actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
         total_sec = int(delta.total_seconds())
@@ -49,7 +56,6 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
 def get_status(row, mode, now):
     station_data = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
-    last_actual_dt = START_TIME
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
@@ -69,19 +75,30 @@ def get_status(row, mode, now):
                 current_loop = station_counts[clean_name]
                 total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
 
-    if total_miles >= 100.0:
+    # Calculate time based on last check-in
+    el_str, el_sec, actual_dt = calculate_elapsed(last_val, current_loop, last_loc)
+
+    # Status Determination Logic with 1-minute Grace Period
+    if total_miles >= 100.0 and (el_sec is not None and el_sec <= MAX_ALLOWED_SECONDS):
         status_text, sort_weight = "Finished!", 100.0
     elif has_data:
         status_text, sort_weight = last_loc, total_miles
     else:
-        status_text = "Race Started" if now >= START_TIME else "Starts May 2nd"
+        if now < START_TIME:
+            status_text = "Starts May 2nd @ 6am"
+        elif now < (START_TIME + datetime.timedelta(hours=1.5)):
+            status_text = "Race Started"
+        else:
+            status_text = "DNS"
         sort_weight = -2.0
 
-    if is_manual_dnf:
-        status_text, sort_weight = "DNF", -1.0
+    # Auto-DNF if over 32:01:00 or manual DNF flag
+    # Note: Finished runners are already caught by the first 'if'
+    if is_manual_dnf or (now > END_TIME and status_text != "Finished!" and status_text != "DNS"):
+        if status_text != "Finished!":
+            status_text, sort_weight = "DNF", -1.0
     
-    elapsed_str, elapsed_seconds, actual_dt = calculate_elapsed(last_val, current_loop, status_text)
-    return status_text, total_miles, sort_weight, last_val, current_loop, elapsed_str, elapsed_seconds, actual_dt
+    return status_text, total_miles, sort_weight, last_val, current_loop, el_str, el_sec, actual_dt
 
 @st.cache_data(ttl=30)
 def load_data(mode, now):
@@ -97,52 +114,46 @@ def load_data(mode, now):
     
     for _, row in sub_df.iterrows():
         status, miles, s_weight, l_time, loop, el_str, el_sec, l_dt = get_status(row, mode, now)
-        
         avg_pace = miles / (el_sec / 3600) if el_sec and el_sec > 0 else 0.0
         
         eta_display = "---"
-        if status not in ["Finished!", "DNF", "DNS", "Starts May 2nd", "Race Started"] and avg_pace > 0:
+        if status not in ["Finished!", "DNF", "DNS", "Race Started"] and avg_pace > 0 and now < END_TIME:
             try:
                 curr_idx = STATION_ORDER.index(status)
                 next_station = STATION_ORDER[0] if status == "Start/Finish" else STATION_ORDER[curr_idx + 1]
                 dist_to_next = mileage_map["Middle out"] if status == "Start/Finish" else mileage_map[next_station] - mileage_map[status]
-                
                 hours_to_next = dist_to_next / avg_pace
                 arrival_dt = l_dt + datetime.timedelta(hours=hours_to_next)
                 eta_display = f"{next_station} @ {arrival_dt.strftime('%I:%M %p').lstrip('0')}"
-            except: 
-                eta_display = "TBD"
+            except: eta_display = "TBD"
 
         results.append({
+            "Pos": None if s_weight < 0 else 0,
             "Team/Runner": row['Team/Runner'],
             "Bib": int(row['Bib']) if pd.notnull(row['Bib']) else 0,
             "Status": status,
             "Miles": miles,
             "SortWeight": s_weight,
-            "Time": l_time,
-            "Race Time": el_str,
-            "Average Speed": avg_pace,
-            "Next Expected": eta_display,
+            "Last Seen": l_time if status not in ["DNS", "Race Started"] else "",
+            "Race Time": el_str if status not in ["DNS", "Race Started"] else "",
+            "Avg Speed": avg_pace if status not in ["DNS", "Race Started", "DNF"] else 0.0,
+            "Next Expected": eta_display if status not in ["Finished!", "DNF", "DNS"] else "---",
             "SortSeconds": el_sec if el_sec is not None else 999999,
-            "Lap": loop
+            "Lap": loop if status not in ["DNS", "Race Started"] else ""
         })
     
     full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
-    full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
-    full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
+    active_mask = full_df['SortWeight'] >= 0
+    full_df.loc[active_mask, 'Pos'] = range(1, active_mask.sum() + 1)
     return full_df
 
 # --- UI ---
 now = datetime.datetime.now()
 
-# Primary image load for logo.jpg
 try:
     st.image("logo.jpg", width=250)
 except:
-    try:
-        st.image("Riverlands Logo.jpg", width=250)
-    except:
-        st.warning("Logo file not found.")
+    st.image("Riverlands Logo.jpg", width=250)
 
 st.title("Riverlands 100 Live Leaderboard")
 
@@ -152,7 +163,8 @@ with st.container():
         st.write("**Hours Until Race Day!**")
     else:
         elapsed_diff = now - START_TIME
-        st.subheader(f"⏱️ {format_delta_hhh(min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS)))}")
+        display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
+        st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
         st.write("**Elapsed Race Time**")
 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
@@ -166,24 +178,20 @@ try:
     master_df = load_data(view_mode, now)
     display_df = master_df if not query else master_df[master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)]
 
-    # Dropping sort columns
-    output_df = display_df.drop(columns=['SortWeight', 'SortSeconds'])
-
     st.dataframe(
-        output_df,
+        display_df.drop(columns=['SortWeight', 'SortSeconds']),
         column_config={
             "Pos": st.column_config.Column(alignment="right"),
-            "Team/Runner": st.column_config.Column(width="medium"),
             "Bib": st.column_config.Column(alignment="right"),
             "Status": st.column_config.Column(alignment="right"),
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f", alignment="right"),
-            "Average Speed": st.column_config.NumberColumn("Avg Speed", format="%.2f mph", alignment="right"),
+            "Avg Speed": st.column_config.NumberColumn("Avg Speed", format="%.2f mph", alignment="right"),
             "Next Expected": st.column_config.Column("Next Expected Location", alignment="right"),
             "Race Time": st.column_config.Column(alignment="right"),
-            "Time": st.column_config.Column("Last Seen", alignment="right"),
+            "Last Seen": st.column_config.Column(alignment="right"),
             "Lap": st.column_config.Column(alignment="right")
         },
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error(f"Updating Leaderboard... ({e})")
+    st.error(f"Waiting for live data feed... ({e})")
