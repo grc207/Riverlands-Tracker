@@ -113,6 +113,12 @@ def load_data(mode, now):
     results = []
     for _, row in sub_df.iterrows():
         status, miles, s_weight, l_time, loop, el_str, el_sec = get_status(row, mode, now)
+        
+        # Calculate Average Pace (MPH)
+        avg_pace = 0.0
+        if el_sec and el_sec > 0:
+            avg_pace = miles / (el_sec / 3600)
+
         results.append({
             "Team/Runner": row['Team/Runner'],
             "Bib": int(row['Bib']) if pd.notnull(row['Bib']) else 0,
@@ -121,6 +127,7 @@ def load_data(mode, now):
             "SortWeight": s_weight,
             "Time": l_time,
             "Elapsed": el_str,
+            "Average Pace": avg_pace, # Added Pace field
             "SortSeconds": el_sec if el_sec is not None else 999999,
             "Lap": loop
         })
@@ -138,7 +145,7 @@ now = datetime.datetime.now()
 # 1. Display the Logo (centered)
 st.image("logo.jpg", use_container_width=False)
 
-# 2. Display the Title (removing the runner emoji)
+# 2. Display the Title
 st.title("Riverlands 100 Live Leaderboard")
 
 # Dynamic Clock Container
@@ -149,7 +156,6 @@ with st.container():
         st.write("**Hours Until Race Day!**")
     else:
         elapsed_diff = now - START_TIME
-        # Cap at 32 hours
         if elapsed_diff > datetime.timedelta(hours=RACE_LIMIT_HOURS):
             elapsed_diff = datetime.timedelta(hours=RACE_LIMIT_HOURS)
         
@@ -182,6 +188,7 @@ try:
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
             "Pos": st.column_config.NumberColumn("Pos", format="%d"),
             "Elapsed": "Race Time",
+            "Average Pace": st.column_config.NumberColumn("Average Pace", format="%.2f mph"), # Formatted column
             "Time": "Time of Day"
         },
         use_container_width=True, hide_index=True
