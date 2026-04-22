@@ -11,14 +11,14 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchz
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
 RACE_LIMIT_HOURS = 32
 
-# Mileage Constants
-MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
-MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
+# Mileage Constants & Order for prediction
+STATION_ORDER = ["Start", "Middle out", "Conant Rd", "Middle back", "Start/Finish"]
+MAP_100 = {"Start": 0.0, "Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Start/Finish": 25.0}
+MAP_RELAY = {"Start": 0.0, "Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Start/Finish": 20.0}
 
 # --- HELPER FUNCTIONS ---
 
 def format_delta_hhh(delta):
-    """Formats a timedelta into HHH:MM:SS."""
     total_seconds = int(delta.total_seconds())
     hours, remainder = divmod(total_seconds, 3600)
     minutes, seconds = divmod(remainder, 60)
@@ -31,7 +31,7 @@ def fuzzy_match(query, target):
 
 def calculate_elapsed(station_time_str, current_loop, last_loc):
     if not station_time_str or str(station_time_str).strip() == "":
-        return None, None
+        return None, None, None
     try:
         t = pd.to_datetime(str(station_time_str).strip()).time()
         day = 2
@@ -39,23 +39,19 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         if last_loc == "Finished!" and t.hour < 14: day = 3
         actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
-        total_seconds = int(delta.total_seconds())
-        hours, remainder = divmod(total_seconds, 3600)
-        minutes, _ = divmod(remainder, 60)
-        return f"{hours}h {minutes:02d}m", total_seconds
+        return f"{hours}h {minutes:02d}m", int(delta.total_seconds()), actual_dt
     except:
-        return None, None
+        return None, None, None
 
 def get_status(row, mode, now):
     station_data = row.iloc[2:] 
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
+    last_dt = START_TIME
     
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Start/Finish": 0}
     
-    # Fail-safe logic
-    gap_counter = 0 
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf').any()
 
     for col_name, val in station_data.items():
@@ -64,39 +60,32 @@ def get_status(row, mode, now):
 
         if clean_name in station_counts:
             if val_str != "" and "dnf" not in val_str.lower():
-                gap_counter = 0 # Reset gap
                 station_counts[clean_name] += 1
                 loop_idx = station_counts[clean_name] - 1
                 has_data, last_val, last_loc = True, val_str, clean_name
                 current_loop = station_counts[clean_name]
                 total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
-            else:
-                gap_counter += 1
-                if gap_counter >= 3: # FAIL-SAFE TRIGGERED
-                    break
-        else:
-            continue
+                
+                # Get actual timestamp for ETA math
+                try:
+                    t = pd.to_datetime(val_str).time()
+                    day = 2 if not (current_loop >= 3 and t.hour < 14) else 3
+                    last_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
+                except: pass
 
-    # 1. Determine Status Text
     if total_miles >= 100.0:
         status_text, sort_weight = "Finished!", 100.0
     elif has_data:
         status_text, sort_weight = last_loc, total_miles
     else:
-        # NEW: Time-based logic for runners with no check-ins
-        if now < START_TIME:
-            status_text = "Starts May 2nd @ 6am"
-        elif now < (START_TIME + datetime.timedelta(hours=1.5)):
-            status_text = "Race Started"
-        else:
-            status_text = "DNS"
+        status_text = "Race Started" if now >= START_TIME else "Starts May 2nd"
         sort_weight = -2.0
 
     if is_manual_dnf:
         status_text, sort_weight = "DNF", -1.0
     
-    elapsed_str, elapsed_seconds = calculate_elapsed(last_val, current_loop, status_text)
-    return status_text, total_miles, sort_weight, last_val, current_loop, elapsed_str, elapsed_seconds
+    elapsed_str, elapsed_seconds, last_actual_dt = calculate_elapsed(last_val, current_loop, status_text)
+    return status_text, total_miles, sort_weight, last_val, current_loop, elapsed_str, elapsed_seconds, last_actual_dt
 
 @st.cache_data(ttl=30)
 def load_data(mode, now):
@@ -104,20 +93,32 @@ def load_data(mode, now):
     df.columns = [str(c).strip() for c in df.columns]
     df['Bib'] = pd.to_numeric(df['Bib'], errors='coerce')
     
-    if mode == "100 Miler":
-        sub_df = df[df['Bib'] >= 300].copy()
-    else:
-        sub_df = df[df['Bib'] < 300].copy()
-        sub_df = sub_df[sub_df['Team/Runner'].notna()]
+    sub_df = df[df['Bib'] >= 300].copy() if mode == "100 Miler" else df[df['Bib'] < 300].copy()
+    if mode != "100 Miler": sub_df = sub_df[sub_df['Team/Runner'].notna()]
     
+    mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     results = []
+    
     for _, row in sub_df.iterrows():
-        status, miles, s_weight, l_time, loop, el_str, el_sec = get_status(row, mode, now)
+        status, miles, s_weight, l_time, loop, el_str, el_sec, l_dt = get_status(row, mode, now)
         
-        # Calculate Average Pace (MPH)
-        avg_pace = 0.0
-        if el_sec and el_sec > 0:
-            avg_pace = miles / (el_sec / 3600)
+        avg_pace = miles / (el_sec / 3600) if el_sec and el_sec > 0 else 0.0
+        
+        # --- ETA LOGIC ---
+        eta_display = "---"
+        if status not in ["Finished!", "DNF", "DNS"] and avg_pace > 0:
+            try:
+                curr_idx = STATION_ORDER.index(status)
+                next_station = STATION_ORDER[0] if status == "Start/Finish" else STATION_ORDER[curr_idx + 1]
+                
+                # Distance to next point
+                dist_to_next = mileage_map[next_station] - mileage_map[status]
+                if dist_to_next <= 0: dist_to_next = mileage_map["Middle out"] # Lap rollover
+                
+                hours_to_next = dist_to_next / avg_pace
+                arrival_dt = (l_dt or START_TIME) + datetime.timedelta(hours=hours_to_next)
+                eta_display = f"{next_station} @ {arrival_dt.strftime('%I:%M %p').lstrip('0')}"
+            except: pass
 
         results.append({
             "Team/Runner": row['Team/Runner'],
@@ -127,9 +128,9 @@ def load_data(mode, now):
             "SortWeight": s_weight,
             "Time": l_time,
             "Elapsed": el_str,
-            "Average Pace": avg_pace, # Added Pace field
-            "SortSeconds": el_sec if el_sec is not None else 999999,
-            "Lap": loop
+            "Average Pace": avg_pace,
+            "Expected Arrival": eta_display,
+            "SortSeconds": el_sec if el_sec is not None else 999999
         })
     
     full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
@@ -138,58 +139,36 @@ def load_data(mode, now):
     return full_df
 
 # --- UI ---
-
-# Header & Timer Logic
 now = datetime.datetime.now()
-
-# 1. Display the Logo (centered)
-st.image("logo.jpg", use_container_width=False)
-
-# 2. Display the Title
+st.image("logo.jpg", width=250)
 st.title("Riverlands 100 Live Leaderboard")
 
-# Dynamic Clock Container
 with st.container():
+    elapsed_diff = now - START_TIME
     if now < START_TIME:
-        time_diff = START_TIME - now
-        st.subheader(f"⏱️ {format_delta_hhh(time_diff)}")
+        st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
         st.write("**Hours Until Race Day!**")
     else:
-        elapsed_diff = now - START_TIME
-        if elapsed_diff > datetime.timedelta(hours=RACE_LIMIT_HOURS):
-            elapsed_diff = datetime.timedelta(hours=RACE_LIMIT_HOURS)
-        
-        st.subheader(f"⏱️ {format_delta_hhh(elapsed_diff)}")
+        st.subheader(f"⏱️ {format_delta_hhh(min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS)))}")
         st.write("**Elapsed Race Time**")
 
-st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
-        "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
-        "Some updates may take a few minutes to refresh.")
+st.info("**Disclaimer:** Independent project. Not official timing data.")
 
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
-
-if view_mode == "100 Miler":
-    query = st.text_input("Search Name or Bib", placeholder="Search runners...")
-else:
-    query = ""
+query = st.text_input("Search Name or Bib", placeholder="Search...") if view_mode == "100 Miler" else ""
 
 try:
     master_df = load_data(view_mode, now)
-    
-    if query and view_mode == "100 Miler":
-        mask = master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)
-        display_df = master_df[mask]
-    else:
-        display_df = master_df
+    display_df = master_df if not query else master_df[master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)]
 
     st.dataframe(
         display_df.drop(columns=['SortWeight', 'SortSeconds']),
         column_config={
             "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
-            "Pos": st.column_config.NumberColumn("Pos", format="%d"),
+            "Average Pace": st.column_config.NumberColumn("Avg Speed", format="%.2f mph"),
+            "Expected Arrival": "Next Expected Location",
             "Elapsed": "Race Time",
-            "Average Pace": st.column_config.NumberColumn("Average Pace", format="%.2f mph"), # Formatted column
-            "Time": "Time of Day"
+            "Time": "Last Seen"
         },
         use_container_width=True, hide_index=True
     )
