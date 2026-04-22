@@ -134,7 +134,16 @@ def load_data(mode, now):
 
 # --- UI ---
 now = datetime.datetime.now()
-st.image("Riverlands Logo.jpg", width=250)
+
+# Primary image load for logo.jpg
+try:
+    st.image("logo.jpg", width=250)
+except:
+    try:
+        st.image("Riverlands Logo.jpg", width=250)
+    except:
+        st.warning("Logo file not found.")
+
 st.title("Riverlands 100 Live Leaderboard")
 
 with st.container():
@@ -175,4 +184,4 @@ try:
         use_container_width=True, hide_index=True
     )
 except Exception as e:
-    st.error(f"Error loading leaderboard: {e}")
+    st.error(f"Updating Leaderboard... ({e})")
