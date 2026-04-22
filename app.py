@@ -105,10 +105,7 @@ def load_data(mode, now):
             try:
                 curr_idx = STATION_ORDER.index(status)
                 next_station = STATION_ORDER[0] if status == "Start/Finish" else STATION_ORDER[curr_idx + 1]
-                if status == "Start/Finish":
-                    dist_to_next = mileage_map["Middle out"] 
-                else:
-                    dist_to_next = mileage_map[next_station] - mileage_map[status]
+                dist_to_next = mileage_map["Middle out"] if status == "Start/Finish" else mileage_map[next_station] - mileage_map[status]
                 
                 hours_to_next = dist_to_next / avg_pace
                 arrival_dt = l_dt + datetime.timedelta(hours=hours_to_next)
@@ -118,3 +115,64 @@ def load_data(mode, now):
 
         results.append({
             "Team/Runner": row['Team/Runner'],
+            "Bib": int(row['Bib']) if pd.notnull(row['Bib']) else 0,
+            "Status": status,
+            "Miles": miles,
+            "SortWeight": s_weight,
+            "Time": l_time,
+            "Race Time": el_str,
+            "Average Speed": avg_pace,
+            "Next Expected": eta_display,
+            "SortSeconds": el_sec if el_sec is not None else 999999,
+            "Lap": loop
+        })
+    
+    full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
+    full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
+    full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
+    return full_df
+
+# --- UI ---
+now = datetime.datetime.now()
+st.image("Riverlands Logo.jpg", width=250)
+st.title("Riverlands 100 Live Leaderboard")
+
+with st.container():
+    if now < START_TIME:
+        st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
+        st.write("**Hours Until Race Day!**")
+    else:
+        elapsed_diff = now - START_TIME
+        st.subheader(f"⏱️ {format_delta_hhh(min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS)))}")
+        st.write("**Elapsed Race Time**")
+
+st.info("**Disclaimer:** Independent project. Not official timing data.")
+
+view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
+query = st.text_input("Search Name or Bib", placeholder="Search...") if view_mode == "100 Miler" else ""
+
+try:
+    master_df = load_data(view_mode, now)
+    display_df = master_df if not query else master_df[master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)]
+
+    # Dropping sort columns
+    output_df = display_df.drop(columns=['SortWeight', 'SortSeconds'])
+
+    st.dataframe(
+        output_df,
+        column_config={
+            "Pos": st.column_config.Column(alignment="right"),
+            "Team/Runner": st.column_config.Column(width="medium"),
+            "Bib": st.column_config.Column(alignment="right"),
+            "Status": st.column_config.Column(alignment="right"),
+            "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f", alignment="right"),
+            "Average Speed": st.column_config.NumberColumn("Avg Speed", format="%.2f mph", alignment="right"),
+            "Next Expected": st.column_config.Column("Next Expected Location", alignment="right"),
+            "Race Time": st.column_config.Column(alignment="right"),
+            "Time": st.column_config.Column("Last Seen", alignment="right"),
+            "Lap": st.column_config.Column(alignment="right")
+        },
+        use_container_width=True, hide_index=True
+    )
+except Exception as e:
+    st.error(f"Error loading leaderboard: {e}")
