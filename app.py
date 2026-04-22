@@ -100,15 +100,11 @@ def load_data(mode, now):
         
         avg_pace = miles / (el_sec / 3600) if el_sec and el_sec > 0 else 0.0
         
-        # --- ETA LOGIC ---
         eta_display = "---"
         if status not in ["Finished!", "DNF", "DNS", "Starts May 2nd", "Race Started"] and avg_pace > 0:
             try:
                 curr_idx = STATION_ORDER.index(status)
-                # Determine next station name
                 next_station = STATION_ORDER[0] if status == "Start/Finish" else STATION_ORDER[curr_idx + 1]
-                
-                # Distance to next point calculation
                 if status == "Start/Finish":
                     dist_to_next = mileage_map["Middle out"] 
                 else:
@@ -122,58 +118,3 @@ def load_data(mode, now):
 
         results.append({
             "Team/Runner": row['Team/Runner'],
-            "Bib": int(row['Bib']) if pd.notnull(row['Bib']) else 0,
-            "Status": status,
-            "Miles": miles,
-            "SortWeight": s_weight,
-            "Time": l_time,
-            "Race Time": el_str,
-            "Average Speed": avg_pace,
-            "Next Expected": eta_display,
-            "SortSeconds": el_sec if el_sec is not None else 999999,
-            "Lap": loop
-        })
-    
-    full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
-    full_df.insert(0, 'Pos', range(1, len(full_df) + 1))
-    full_df.loc[full_df['SortWeight'] < 0, 'Pos'] = None
-    return full_df
-
-# --- UI ---
-now = datetime.datetime.now()
-st.image("logo.jpg", width=250)
-st.title("Riverlands 100 Live Leaderboard")
-
-with st.container():
-    if now < START_TIME:
-        st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
-        st.write("**Hours Until Race Day!**")
-    else:
-        elapsed_diff = now - START_TIME
-        st.subheader(f"⏱️ {format_delta_hhh(min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS)))}")
-        st.write("**Elapsed Race Time**")
-
-st.info("**Disclaimer:** Independent project. Not official timing data.")
-
-view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
-query = st.text_input("Search Name or Bib", placeholder="Search...") if view_mode == "100 Miler" else ""
-
-try:
-    master_df = load_data(view_mode, now)
-    display_df = master_df if not query else master_df[master_df.apply(lambda r: fuzzy_match(query, r['Team/Runner']) or query in str(r['Bib']), axis=1)]
-
-    st.dataframe(
-        display_df.drop(columns=['SortWeight', 'SortSeconds']),
-        column_config={
-            "Miles": st.column_config.NumberColumn("Total Miles", format="%.1f"),
-            "Average Speed": st.column_config.NumberColumn("Avg Speed", format="%.2f mph"),
-            "Next Expected": "Next Expected Location",
-            "Race Time": "Race Time",
-            "Time": "Last Seen",
-            "Lap": "Lap",
-            "Pos": st.column_config.NumberColumn("Pos", format="%d")
-        },
-        use_container_width=True, hide_index=True
-    )
-except Exception as e:
-    st.error(f"Error loading leaderboard: {e}")
