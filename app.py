@@ -46,13 +46,26 @@ MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0, "Start/Finish": 20.0}
 STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 
-def get_next_expected(status, current_station, current_miles, avg_mph, mode):
-    if status in ["Finished!", "DNF", "DNS"] or avg_mph <= 0:
+def get_next_expected(status, current_station, current_miles, avg_mph, mode, checkin_val):
+    if status in ["Finished!", "DNF", "DNS"] or avg_mph <= 0 or not checkin_val:
         return "---"
     
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     
+    try:
+        # Convert checkin_val (e.g., "10:09:52") to a base timestamp
+        # Logic assumes Day 2 if hour < 14 (2 PM) based on your race start logic
+        t_parsed = pd.to_datetime(checkin_val, errors='coerce')
+        if t_parsed.hour < 6: # Day 2
+             base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
+        elif t_parsed.hour >= 14: # Day 1
+             base_dt = datetime.datetime(2026, 5, 2, t_parsed.hour, t_parsed.minute, t_parsed.second)
+        else: # Transition morning Day 2
+             base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
+    except:
+        return "---"
+
     try:
         idx = STATION_ORDER.index(current_station)
         next_idx = (idx + 1) % len(STATION_ORDER)
@@ -60,16 +73,15 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode):
     except:
         next_name = STATION_ORDER[0]
 
-    # Fixed distance math: Next station progress vs current progress in loop
     current_lap_progress = current_miles % loop_size
     next_station_progress = m_map[next_name]
     
     dist_to_next = next_station_progress - current_lap_progress
-    if dist_to_next <= 0: # Wrap to next lap
-        dist_to_next += loop_size
+    if dist_to_next <= 0: dist_to_next += loop_size
 
     hours_to_next = dist_to_next / avg_mph
-    pred_time = datetime.datetime.now() + datetime.timedelta(hours=hours_to_next)
+    # Prediction is now BASE_DT (check-in) + travel time
+    pred_time = base_dt + datetime.timedelta(hours=hours_to_next)
     return f"{next_name} @ {pred_time.strftime('%I:%M %p')}"
 
 def get_status(row, mode):
@@ -102,17 +114,13 @@ def get_status(row, mode):
     try:
         t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
         sec = t_parsed.hour * 3600 + t_parsed.minute * 60
-        # 2 PM calculation for race duration
         total_sec = sec - (6 * 3600) if t_parsed.hour >= 14 else (sec + 86400) - (6 * 3600)
         h, m = divmod(total_sec // 60, 60)
         time_str, avg_mph = f"{int(h)}h {int(m):02d}m", max_miles / (total_sec / 3600) if total_sec > 0 else 0
-        
-        # Check-in time for Status
         time_checkin = t_parsed.strftime('%I:%M %p')
     except:
         time_str, total_sec, avg_mph, time_checkin = "---", 999999, 0, ""
 
-    # Status Column Formatting
     if max_miles >= 100.0:
         status_text = "Finished!"
     elif "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600):
@@ -120,11 +128,9 @@ def get_status(row, mode):
     else:
         status_text = f"{furthest_station} @ {time_checkin}" if time_checkin else furthest_station
 
-    # Prediction (Cleared for DNF/Finished)
-    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode)
-    
-    # Final cleanup for DNF/DNS display
-    display_time = "" if status_text in ["DNF", "DNS"] else time_str
+    # Fix: Pass furthest_val (raw time string) to ensure prediction is based on check-in time
+    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
+    display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
 
     return status_text, max_miles, display_time, total_sec, final_loop, next_exp
 
@@ -143,13 +149,8 @@ def load_data(mode, query=""):
     active_df = active_df[active_df['Team/Runner'].notna()]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
-    
-    # Apply Search Filter
     if query:
-        active_df = active_df[
-            active_df['Team/Runner'].astype(str).str.contains(query, case=False) | 
-            active_df[bib_col].astype(str).str.contains(query, case=False)
-        ]
+        active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).str.contains(query, case=False)]
     
     results = []
     for _, row in active_df.iterrows():
@@ -164,8 +165,6 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
-    
-    # Position Assignment
     mask = (~full_df['Status'].str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
@@ -188,7 +187,4 @@ try:
                 "Next Expected Location": st.column_config.Column(width="medium")
             }
         )
-    else:
-        st.write("No runners found.")
-except Exception as e: 
-    st.error(f"Error: {e}")
+except Exception as e: st.error(f"Error: {e}")
