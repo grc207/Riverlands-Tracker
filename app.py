@@ -94,4 +94,3 @@ def get_status(row, mode):
                 
                 curr_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
                 if
-                
