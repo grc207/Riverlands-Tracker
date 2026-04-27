@@ -41,7 +41,7 @@ st.info("**Disclaimer:** This is an independent project and is not maintained by
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 4. Station Mapping
+# 4. Mapping & Helper Functions
 MAP_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0, "Start/Finish": 25.0}
 MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0, "Start/Finish": 20.0}
 STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -79,8 +79,8 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode, che
     hours_to_next = dist_to_next / avg_mph
     pred_time = base_dt + datetime.timedelta(hours=hours_to_next)
     
-    # Use HTML break for guaranteed split
-    return f"**{next_name}**<br>{pred_time.strftime('%I:%M %p')}"
+    # HTML formatted for two lines
+    return f"<b>{next_name}</b><br>{pred_time.strftime('%I:%M %p')}"
 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
@@ -124,8 +124,7 @@ def get_status(row, mode):
     elif "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600):
         status_text = "DNF"
     else:
-        # Use bold and HTML break for current status
-        status_text = f"**{furthest_station}**<br>{time_checkin}" if time_checkin else furthest_station
+        status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if time_checkin else furthest_station
 
     next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
     display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
@@ -163,7 +162,9 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
-    mask = (~full_df['Status'].str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
+    
+    # Rank non-DNF/DNS runners
+    mask = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
     return full_df
@@ -175,16 +176,22 @@ search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
-        # Use column_config to enable Markdown rendering for the split lines
-        st.dataframe(
-            master_df.drop(columns=['SortSeconds']),
-            use_container_width=True, hide_index=True,
-            column_config={
-                "Pos": st.column_config.Column(width="small", alignment="center"),
-                "Status": st.column_config.TextColumn(width="medium"),
-                "Next Expected": st.column_config.TextColumn(width="medium"),
-                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
-                "Lap": st.column_config.Column(alignment="center")
-            }
+        # Convert Pos to integer/string to remove .0
+        master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
+        
+        # WE USE st.write with to_html() to force the <br> line breaks
+        html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
+        
+        # Add custom CSS to make it look like a nice leaderboard
+        st.markdown(
+            """
+            <style>
+            table { width: 100%; border-collapse: collapse; }
+            th { background-color: #f0f2f6; text-align: left; padding: 10px; }
+            td { padding: 10px; border-bottom: 1px solid #ddd; }
+            tr:hover { background-color: #f5f5f5; }
+            </style>
+            """, unsafe_allow_html=True
         )
+        st.write(html_table, unsafe_allow_html=True)
 except Exception as e: st.error(f"Error: {e}")
