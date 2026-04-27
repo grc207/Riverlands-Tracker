@@ -46,7 +46,7 @@ def get_status(row, mode):
     last_time_str = ""
     current_lap = 1
     
-    # CASE-INSENSITIVE DNF CHECK: Convert row to string and check lower
+    # CASE-INSENSITIVE DNF CHECK
     row_as_string = " ".join(row.fillna("").astype(str)).lower()
     is_dnf_anywhere = "dnf" in row_as_string
 
@@ -63,22 +63,23 @@ def get_status(row, mode):
             
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             
-            # Record distance for any entry (Time or DNF)
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
                     max_miles = calc_miles
                     furthest_station = base_header
                     current_lap = lap_num
             
-            # Record the latest valid timestamp for pace/sorting
             if ":" in val_str:
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
+    # HARD CAP: Ensure mileage never exceeds 100.0
+    if max_miles > 100.0:
+        max_miles = 100.0
+
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1
 
-    # Time Calculation
     try:
         t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
         sec = t_parsed.hour * 3600 + t_parsed.minute * 60
@@ -88,7 +89,6 @@ def get_status(row, mode):
     except:
         time_str, total_sec, time_checkin = "---", 999999, ""
 
-    # Status determination with DNF priority
     if max_miles >= 100.0:
         status_text = "Finished!"
     elif is_dnf_anywhere:
@@ -103,16 +103,17 @@ def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Split the sheet between Relay and 100 Miler
+    # Split sheet
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap_indices = df[mask].index
     gap = gap_indices[0] if len(gap_indices) > 0 else len(df)
     
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     
-    bib_col = [c for c in df.columns if 'Bib' in c][0]
+    # FILTER: Remove any rows where Team/Runner is still empty/NaN
+    active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
-    # CLEAN BIB DECIMAL: Removes .0 from bib numbers
+    bib_col = [c for c in df.columns if 'Bib' in c][0]
     active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
 
     if query:
@@ -122,7 +123,6 @@ def load_data(mode, query=""):
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, lap = get_status(row, mode)
         
-        # Strip stats for DNF/DNS runners except mileage
         is_inactive = any(x in status for x in ["DNF", "DNS"])
         avg_speed = "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph"
         race_time = "---" if is_inactive else t_disp
@@ -135,10 +135,7 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     
-    # Sort: Miles Descending, Time Ascending
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
-    
-    # Ranking Logic: Rank only active runners with mileage
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
