@@ -144,4 +144,49 @@ def load_data(mode, query=""):
         relay_df, miler_df = df.loc[:gap-1].copy(), df.loc[gap+1:].copy()
     else: relay_df, miler_df = df.copy(), pd.DataFrame()
 
-    active_df = mil
+    active_df = miler_df if mode == "100 Miler" else relay_df
+    active_df = active_df[active_df['Team/Runner'].notna()]
+    
+    bib_col = [c for c in df.columns if 'Bib' in c][0]
+    if query:
+        active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).str.contains(query, case=False)]
+    
+    results = []
+    for _, row in active_df.iterrows():
+        status, miles, t_disp, t_sec, loop, next_exp = get_status(row, mode)
+        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and "DNF" not in status and "DNS" not in status) else 0.0
+        results.append({
+            "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
+            "Status": status, "Total Miles": miles, "Race Time": t_disp,
+            "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
+            "Next Expected": next_exp, "SortSeconds": t_sec, "Lap": loop if miles > 0 else ""
+        })
+    
+    if not results: return pd.DataFrame()
+    full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    mask = (~full_df['Status'].str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
+    full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+    full_df.loc[~mask, 'Pos'] = None
+    return full_df
+
+# 5. UI Render
+view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
+search_query = st.text_input("Search Name or Bib", placeholder="Search...")
+
+try:
+    master_df = load_data(view_mode, search_query)
+    if not master_df.empty:
+        # Note: Streamlit's default dataframe doesn't always wrap text perfectly. 
+        # Using st.dataframe with custom column config to help visibility.
+        st.dataframe(
+            master_df.drop(columns=['SortSeconds']),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Pos": st.column_config.Column(width="small", alignment="center"),
+                "Status": st.column_config.Column(width="medium"),
+                "Next Expected": st.column_config.Column(width="medium"),
+                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
+                "Lap": st.column_config.Column(alignment="center")
+            }
+        )
+except Exception as e: st.error(f"Error: {e}")
