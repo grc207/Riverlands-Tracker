@@ -40,7 +40,8 @@ MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    total_race_dist = 100.0
+    # 100 Milers do 4 loops of 25. Relay does 5 loops of 20.
+    max_loops = 4 if mode == "100 Miler" else 5
     
     max_miles = 0.0
     furthest_station = ""
@@ -55,49 +56,55 @@ def get_status(row, mode):
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
         if val_str == "": continue
 
+        # Standardize station names
         base_header = col_name.split('.')[0].strip()
         if "Start/Finish" in base_header: base_header = "Arrive S/F"
 
         if base_header in m_map:
             try:
-                # Extracts the lap number from the column header (e.g., "Middle out.1" is Lap 2)
+                # Pandas adds .1, .2, etc to duplicate headers. 
+                # "Middle out" = index 0 (Lap 1), "Middle out.1" = index 1 (Lap 2)
                 lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
                 lap_num = lap_idx + 1
             except:
                 lap_num = 1
             
+            # CRITICAL FIX: Ignore any data that suggests a lap beyond the race limit
+            if lap_num > max_loops:
+                continue
+            
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             
-            # Record distance for any entry (Time or DNF)
+            # Check for progress (Timestamp or DNF text)
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
                     max_miles = calc_miles
                     furthest_station = base_header
                     current_lap = lap_num
             
-            # Record the latest valid timestamp for pace/sorting
+            # Track the latest time specifically for sorting/display
             if ":" in val_str:
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
-    # HARD CAP at 100 Miles
-    if max_miles > total_race_dist:
-        max_miles = total_race_dist
-
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1
 
+    # Time/Pace Logic
     try:
         t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
         sec = t_parsed.hour * 3600 + t_parsed.minute * 60
-        total_sec = sec - (6 * 3600) if t_parsed.hour >= 14 else (sec + 86400) - (6 * 3600)
+        # Adjust for 6am start
+        total_sec = sec - (6 * 3600) if t_parsed.hour >= 6 else (sec + 86400) - (6 * 3600)
         time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
         time_checkin = t_parsed.strftime('%I:%M %p')
     except:
         time_str, total_sec, time_checkin = "---", 999999, ""
 
-    if max_miles >= total_race_dist:
+    # Set Final Status
+    if max_miles >= (max_loops * loop_dist):
         status_text = "Finished!"
+        max_miles = float(max_loops * loop_dist)
     elif is_dnf_anywhere:
         status_text = "DNF"
     else:
@@ -110,14 +117,15 @@ def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Split the sheet between Relay and 100 Miler
+    # Detect the gap between Relay and 100 Miler
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap_indices = df[mask].index
     gap = gap_indices[0] if len(gap_indices) > 0 else len(df)
     
+    # Filter the correct subset
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     
-    # Remove empty/NaN rows
+    # Remove NaN runner rows to prevent fake DNS entries
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
@@ -141,35 +149,19 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     
-    # Sort: Miles Descending, Time Ascending
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Rank active runners
+    # Ranking logic
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
-# UI Render
+# 5. UI Render
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
-        master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
-        html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
-        st.markdown(
-            """
-            <style>
-            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
-            th { background-color: #f0f2f6; text-align: center; padding: 12px; font-weight: bold; }
-            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; text-align: center; }
-            tr:hover { background-color: #fafafa; }
-            td:nth-child(2) { text-align: left; }
-            </style>
-            """, unsafe_allow_html=True
-        )
-        st.write(html_table, unsafe_allow_html=True)
-except Exception as e:
-    st.error(f"Syncing data... ({e})")
+        master_df['Pos'] = master_df['Pos
