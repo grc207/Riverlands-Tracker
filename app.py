@@ -15,16 +15,10 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. Disclaimer (Moved to Top)
-st.markdown(
-    """
-    <div style='text-align: center; color: #666; font-size: 0.9em; padding: 10px; background-color: #f9f9f9; border-radius: 5px; border: 1px solid #eee; margin-bottom: 20px;'>
-        <b>IMPORTANT DISCLAIMER:</b> All times and standings shown are unofficial and intended for spectator 
-        tracking purposes only. Race-day conditions or technical delays may impact real-time accuracy. 
-        Official results will be posted following the conclusion of the event.
-    </div>
-    """, unsafe_allow_html=True
-)
+# 2. Restored st.info Disclaimer
+st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
+        "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
+        "Some updates may take a few minutes to refresh.")
 
 # 3. Timer Logic
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
@@ -38,11 +32,14 @@ def format_delta_hhh(delta):
     return f"{hours}h {minutes:02d}m"
 
 if now < START_TIME:
-    st.subheader(f"⏱️ Start in: {format_delta_hhh(START_TIME - now)}")
+    st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
 else:
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
-    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(display_elapsed)}")
+    st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
+
+# Label from your screenshot
+st.write("**Elapsed Race Time**")
 
 # 4. Station Configuration
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -59,8 +56,8 @@ def get_status(row, mode):
     
     max_miles, furthest_station, last_time_str = 0.0, "", ""
     
-    # Case-Insensitive DNF Check
-    row_str = " ".join(row.fillna("").astype(str)).lower()
+    # Corrected row processing to avoid 'Series' errors
+    row_str = " ".join(row.astype(str).fillna("")).lower()
     is_dnf = "dnf" in row_str
 
     for col_name, val in row.items():
@@ -93,26 +90,23 @@ def get_status(row, mode):
 
     # Time Parsing with 2 PM Rule
     total_sec, time_str, time_checkin, avg_mph = 999999, "---", "", 0.0
-    
     if last_time_str:
         try:
             t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
             sec_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
+            # 2 PM Rule restored
             total_sec_from_sat = sec_midnight + 86400 if t_parsed.hour < 14 else sec_midnight
             total_sec = total_sec_from_sat - 21600
             time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
             time_checkin = t_parsed.strftime('%I:%M %p')
             if total_sec > 0:
                 avg_mph = max_miles / (total_sec / 3600)
-        except:
-            pass
+        except: pass
 
     if max_miles >= total_race_dist:
         return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
-    
     if is_dnf:
         return "DNF", max_miles, "---", 999999, calculated_loop, "---"
-
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1, "---"
 
