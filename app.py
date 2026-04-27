@@ -90,6 +90,10 @@ def get_status(row, mode):
     if ":" not in row_str and "dnf" not in row_str.lower(): 
         return "DNS", 0.0, "", 999999, 1, "---"
     
+    # Track the last valid timestamp for pace calculation
+    last_timestamp_val = ""
+    last_timestamp_miles = 0.0
+
     for col_name, val in row.items():
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
         if (":" in val_str) or ("dnf" in val_str):
@@ -104,24 +108,28 @@ def get_status(row, mode):
                 curr_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
                 if curr_miles > 100.0: curr_miles = 100.0
                 
-                # Update miles if this is the furthest point reached (even if DNF)
+                # If we find a DNF or a Time, this is our new furthest progress
                 if curr_miles >= max_miles:
                     max_miles = curr_miles
                     furthest_station = base_header
                     final_loop = lap_num if curr_miles < 100.0 else (4 if mode == "100 Miler" else 5)
-                    # If it's a timestamp, save it for pace; if it's a DNF, flag it
+                    
                     if ":" in val_str:
                         furthest_val = val_str
-                        is_dnf = False # Reset if a later column has a valid time
+                        last_timestamp_val = val_str
+                        last_timestamp_miles = curr_miles
+                        is_dnf = False
                     if "dnf" in val_str:
                         is_dnf = True
 
+    # Pace is calculated using the last known TIMESTAMP, not the DNF mileage
     try:
-        t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
+        t_parsed = pd.to_datetime(last_timestamp_val, errors='coerce').time()
         sec = t_parsed.hour * 3600 + t_parsed.minute * 60
         total_sec = sec - (6 * 3600) if t_parsed.hour >= 14 else (sec + 86400) - (6 * 3600)
         h, m = divmod(total_sec // 60, 60)
-        time_str, avg_mph = f"{int(h)}h {int(m):02d}m", max_miles / (total_sec / 3600) if total_sec > 0 else 0
+        time_str = f"{int(h)}h {int(m):02d}m"
+        avg_mph = last_timestamp_miles / (total_sec / 3600) if total_sec > 0 else 0
         time_checkin = t_parsed.strftime('%I:%M %p')
     except:
         time_str, total_sec, avg_mph, time_checkin = "---", 999999, 0, ""
@@ -133,7 +141,8 @@ def get_status(row, mode):
     else:
         status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if time_checkin else furthest_station
 
-    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
+    # Prediction uses the last valid check-in time
+    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, last_timestamp_val)
     display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
 
     return status_text, max_miles, display_time, total_sec, final_loop, next_exp
@@ -159,7 +168,8 @@ def load_data(mode, query=""):
     results = []
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, loop, next_exp = get_status(row, mode)
-        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and "DNF" not in status and "DNS" not in status) else 0.0
+        # Average Speed for display uses current total miles / elapsed time
+        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and t_sec != 999999) else 0.0
         results.append({
             "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
             "Status": status, "Total Miles": miles, "Race Time": t_disp,
