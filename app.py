@@ -55,12 +55,11 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode, che
     
     try:
         t_parsed = pd.to_datetime(checkin_val, errors='coerce')
-        # Logic to anchor prediction to the actual check-in day/time
-        if t_parsed.hour < 6: # Day 2 Morning
+        if t_parsed.hour < 6:
              base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
-        elif t_parsed.hour >= 14: # Day 1 Afternoon/Night
+        elif t_parsed.hour >= 14:
              base_dt = datetime.datetime(2026, 5, 2, t_parsed.hour, t_parsed.minute, t_parsed.second)
-        else: # Transition
+        else:
              base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
     except:
         return "---"
@@ -80,8 +79,8 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode, che
     hours_to_next = dist_to_next / avg_mph
     pred_time = base_dt + datetime.timedelta(hours=hours_to_next)
     
-    # FORMAT: Two lines for prediction
-    return f"{next_name}\n{pred_time.strftime('%I:%M %p')}"
+    # Use HTML break for guaranteed split
+    return f"**{next_name}**<br>{pred_time.strftime('%I:%M %p')}"
 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
@@ -125,8 +124,8 @@ def get_status(row, mode):
     elif "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600):
         status_text = "DNF"
     else:
-        # FORMAT: Two lines for current status
-        status_text = f"{furthest_station}\n{time_checkin}" if time_checkin else furthest_station
+        # Use bold and HTML break for current status
+        status_text = f"**{furthest_station}**<br>{time_checkin}" if time_checkin else furthest_station
 
     next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
     display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
@@ -176,15 +175,14 @@ search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
-        # Note: Streamlit's default dataframe doesn't always wrap text perfectly. 
-        # Using st.dataframe with custom column config to help visibility.
+        # Use column_config to enable Markdown rendering for the split lines
         st.dataframe(
             master_df.drop(columns=['SortSeconds']),
             use_container_width=True, hide_index=True,
             column_config={
                 "Pos": st.column_config.Column(width="small", alignment="center"),
-                "Status": st.column_config.Column(width="medium"),
-                "Next Expected": st.column_config.Column(width="medium"),
+                "Status": st.column_config.TextColumn(width="medium"),
+                "Next Expected": st.column_config.TextColumn(width="medium"),
                 "Total Miles": st.column_config.NumberColumn(format="%.1f"),
                 "Lap": st.column_config.Column(alignment="center")
             }
