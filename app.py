@@ -93,4 +93,102 @@ def get_status(row, mode):
                 except: lap_num = 1
                 
                 curr_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
-                if
+                if curr_miles > 100.0: curr_miles = 100.0
+                
+                if curr_miles >= max_miles:
+                    max_miles, furthest_val, furthest_station = curr_miles, val_str, base_header
+                    final_loop = lap_num if curr_miles < 100.0 else (4 if mode == "100 Miler" else 5)
+
+    try:
+        t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
+        sec = t_parsed.hour * 3600 + t_parsed.minute * 60
+        # 2 PM calculation for race duration
+        total_sec = sec - (6 * 3600) if t_parsed.hour >= 14 else (sec + 86400) - (6 * 3600)
+        h, m = divmod(total_sec // 60, 60)
+        time_str, avg_mph = f"{int(h)}h {int(m):02d}m", max_miles / (total_sec / 3600) if total_sec > 0 else 0
+        
+        # Check-in time for Status
+        time_checkin = t_parsed.strftime('%I:%M %p')
+    except:
+        time_str, total_sec, avg_mph, time_checkin = "---", 999999, 0, ""
+
+    # Status Column Formatting
+    if max_miles >= 100.0:
+        status_text = "Finished!"
+    elif "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600):
+        status_text = "DNF"
+    else:
+        status_text = f"{furthest_station} @ {time_checkin}" if time_checkin else furthest_station
+
+    # Prediction (Cleared for DNF/Finished)
+    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode)
+    
+    # Final cleanup for DNF/DNS display
+    display_time = "" if status_text in ["DNF", "DNS"] else time_str
+
+    return status_text, max_miles, display_time, total_sec, final_loop, next_exp
+
+@st.cache_data(ttl=10)
+def load_data(mode, query=""):
+    df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
+    if df['is_blank'].any():
+        gap = df[df['is_blank']].index[0]
+        relay_df, miler_df = df.loc[:gap-1].copy(), df.loc[gap+1:].copy()
+    else: relay_df, miler_df = df.copy(), pd.DataFrame()
+
+    active_df = miler_df if mode == "100 Miler" else relay_df
+    active_df = active_df[active_df['Team/Runner'].notna()]
+    
+    bib_col = [c for c in df.columns if 'Bib' in c][0]
+    
+    # Apply Search Filter
+    if query:
+        active_df = active_df[
+            active_df['Team/Runner'].astype(str).str.contains(query, case=False) | 
+            active_df[bib_col].astype(str).str.contains(query, case=False)
+        ]
+    
+    results = []
+    for _, row in active_df.iterrows():
+        status, miles, t_disp, t_sec, loop, next_exp = get_status(row, mode)
+        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and "DNF" not in status and "DNS" not in status) else 0.0
+        results.append({
+            "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
+            "Status": status, "Total Miles": miles, "Race Time": t_disp,
+            "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
+            "Next Expected Location": next_exp, "SortSeconds": t_sec, "Lap": loop if miles > 0 else ""
+        })
+    
+    if not results: return pd.DataFrame()
+    full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    
+    # Position Assignment
+    mask = (~full_df['Status'].str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
+    full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+    full_df.loc[~mask, 'Pos'] = None
+    return full_df
+
+# 5. UI Render
+view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
+search_query = st.text_input("Search Name or Bib", placeholder="Search...")
+
+try:
+    master_df = load_data(view_mode, search_query)
+    if not master_df.empty:
+        st.dataframe(
+            master_df.drop(columns=['SortSeconds']),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Pos": st.column_config.Column(width="small", alignment="center"),
+                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
+                "Lap": st.column_config.Column(alignment="center"),
+                "Next Expected Location": st.column_config.Column(width="medium")
+            }
+        )
+    else:
+        st.write("No runners found.")
+except Exception as e: 
+    st.error(f"Error: {e}")
