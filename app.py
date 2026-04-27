@@ -3,10 +3,10 @@ import pandas as pd
 import datetime
 import time
 
-# 1. Setup & Constants
+# 1. Setup & UI Configuration
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
 
-# Logo Centering
+# Centered Logo
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
     try:
@@ -18,7 +18,7 @@ st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1
 
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
 
-# Race Parameters
+# Race Constants
 START_TIME_HOUR = 6 
 RACE_LIMIT_HOURS = 32
 
@@ -39,28 +39,31 @@ def get_status(row, mode):
     for col_name, val in row.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
         
+        # Check for valid time entry
         if ":" in val_str and "dnf" not in val_str.lower():
             base_header = col_name.split('.')[0].strip()
-            # Normalize finish line headers
-            is_finish = "Start/Finish" in base_header or "Arrive S/F" in base_header
+            is_finish = any(x in base_header for x in ["Start/Finish", "Arrive S/F", "Finish"])
+            
             if is_finish: base_header = "Arrive S/F"
 
             if base_header in mileage_map:
                 try:
-                    # Logic to identify lap via Pandas suffix (.1, .2, etc)
+                    # Lap identification based on Pandas suffix
                     lap_num = int(col_name.split('.')[-1]) + 1 if "." in col_name else 1
                 except:
                     lap_num = 1
                 
-                # Check distance
+                # HARD CAP: Prevent mileage from exceeding 100.0
                 curr_miles = ((lap_num - 1) * loop_dist) + mileage_map[base_header]
+                if curr_miles > 100.0:
+                    curr_miles = 100.0
                 
-                # High Water Mark check
+                # Update high water mark
                 if curr_miles >= max_miles:
                     max_miles = curr_miles
                     furthest_val = val_str
                     furthest_station = "Arrive S/F" if is_finish else base_header
-                    final_loop_num = lap_num
+                    final_loop_num = lap_num if curr_miles < 100.0 else max_loops
 
     if max_miles == 0.0:
         return "Race Started", 0.0, "", 0, 1
@@ -69,9 +72,9 @@ def get_status(row, mode):
     try:
         t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
         sec = t_parsed.hour * 3600 + t_parsed.minute * 60
-        if t_parsed.hour >= 14:
+        if t_parsed.hour >= 14: # Day 1
             total_sec = sec - (START_TIME_HOUR * 3600)
-        else:
+        else: # Day 2
             total_sec = (sec + 86400) - (START_TIME_HOUR * 3600)
         
         h, m = divmod(total_sec // 60, 60)
@@ -90,7 +93,7 @@ def load_data(mode):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Identify Split
+    # Identify split between Relay and 100 Miler
     df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     if df['is_blank'].any():
         gap = df[df['is_blank']].index[0]
@@ -122,16 +125,17 @@ def load_data(mode):
     
     if not results: return pd.DataFrame()
 
-    # Sort: Miles Descending, then Time Ascending
+    # Sort: Total Miles (High to Low), then Race Time (Fast to Slow)
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
+    # Assign Position for active finishers
     mask = (full_df['Status'] != "DNF") & (full_df['Total Miles'] > 0)
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
     
     return full_df
 
-# --- UI ---
+# --- UI Render ---
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
 try:
@@ -147,7 +151,7 @@ try:
             }
         )
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Error loading board: {e}")
 
 # Disclaimer (Exact Verbiage)
 st.markdown("---")
