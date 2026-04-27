@@ -164,4 +164,21 @@ search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
-        master_df['Pos'] = master_df['Pos
+        master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
+        html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
+        st.markdown(
+            """
+            <style>
+            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
+            th { background-color: #f0f2f6; text-align: center !important; padding: 12px; font-weight: bold; }
+            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; text-align: center !important; }
+            tr:hover { background-color: #fafafa; }
+            /* Alignment exceptions */
+            td:nth-child(2) { text-align: left !important; }
+            th:nth-child(2) { text-align: left !important; }
+            </style>
+            """, unsafe_allow_html=True
+        )
+        st.write(html_table, unsafe_allow_html=True)
+except Exception as e:
+    st.error(f"Syncing data... ({e})")
