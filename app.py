@@ -15,7 +15,7 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. Restored st.info Disclaimer
+# 2. st.info Disclaimer
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
@@ -37,8 +37,6 @@ else:
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-
-# Label from your screenshot
 st.write("**Elapsed Race Time**")
 
 # 4. Station Configuration
@@ -52,13 +50,15 @@ def get_status(row, mode):
     m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
     s_list = STATIONS_100 if mode == "100 Miler" else STATIONS_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
+    max_loops = 4 if mode == "100 Miler" else 5
     total_race_dist = 100.0
     
-    max_miles, furthest_station, last_time_str = 0.0, "", ""
-    
-    # Corrected row processing to avoid 'Series' errors
+    # 1. DNF CHECK (ABSOLUTE PRIORITY)
     row_str = " ".join(row.astype(str).fillna("")).lower()
     is_dnf = "dnf" in row_str
+    
+    max_miles, furthest_station, last_time_str = 0.0, "", ""
+    sf_count = 0 # Track how many Arrive S/F columns we've passed
 
     for col_name, val in row.items():
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
@@ -68,6 +68,13 @@ def get_status(row, mode):
         if "Start/Finish" in base_header: base_header = "Arrive S/F"
 
         if base_header in m_map:
+            if base_header == "Arrive S/F":
+                sf_count += 1
+            
+            # 2. STRICT COLUMN CAPPING: Ignore data past the final lap terminus
+            if sf_count > max_loops:
+                break
+                
             try:
                 lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
                 lap_num = lap_idx + 1
@@ -94,7 +101,6 @@ def get_status(row, mode):
         try:
             t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
             sec_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
-            # 2 PM Rule restored
             total_sec_from_sat = sec_midnight + 86400 if t_parsed.hour < 14 else sec_midnight
             total_sec = total_sec_from_sat - 21600
             time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
@@ -103,10 +109,13 @@ def get_status(row, mode):
                 avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    if max_miles >= total_race_dist:
-        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+    # 3. DNF FLAG OVERRIDE (Ensures DNF wins even if text is in a 100-mile column)
     if is_dnf:
         return "DNF", max_miles, "---", 999999, calculated_loop, "---"
+        
+    if max_miles >= total_race_dist:
+        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+    
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1, "---"
 
@@ -156,9 +165,12 @@ def load_data(mode, query=""):
         })
     
     if not results: return pd.DataFrame()
+    
+    # Sorting: DNF/DNS go to bottom
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
+    full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
 # 5. Leaderboard UI
