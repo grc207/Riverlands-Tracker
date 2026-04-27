@@ -33,12 +33,16 @@ else:
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
 
-# 3. Strict Mileage Mapping
-STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0, "Start/Finish": 25.0}
-STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0, "Start/Finish": 20.0}
+# 3. Station Configuration
+STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
+STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
+
+STATIONS_RELAY = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
+STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
 def get_status(row, mode):
     m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
+    s_list = STATIONS_100 if mode == "100 Miler" else STATIONS_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     total_race_dist = 100.0
     
@@ -75,47 +79,59 @@ def get_status(row, mode):
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
-    # Final Data Cleanup
     if max_miles > total_race_dist: max_miles = total_race_dist
+    calculated_loop = 1 if max_miles == 0 else int((max_miles - 0.01) // loop_dist) + 1
+
+    # Time Parsing with 2 PM Rule
+    total_sec = 999999
+    time_str = "---"
+    time_checkin = ""
+    avg_mph = 0.0
     
-    # Loop Logic (Mileage-based to avoid Loop 5 errors)
-    if max_miles == 0:
-        calculated_loop = 1
-    else:
-        calculated_loop = int((max_miles - 0.01) // loop_dist) + 1
+    if last_time_str:
+        try:
+            t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
+            sec_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
+            total_sec_from_sat = sec_midnight + 86400 if t_parsed.hour < 14 else sec_midnight
+            total_sec = total_sec_from_sat - 21600
+            time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
+            time_checkin = t_parsed.strftime('%I:%M %p')
+            if total_sec > 0:
+                avg_mph = max_miles / (total_sec / 3600)
+        except:
+            pass
 
-    if max_miles == 0 and not last_time_str:
-        return "DNS", 0.0, "", 999999, 1
-
-    # RESTORED: 2 PM Next-Day Logic
-    try:
-        t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
-        # Convert everything to seconds since midnight
-        sec_since_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
-        
-        # 2 PM Rule: If hour < 14 (2 PM), it's Sunday (add 24 hours)
-        # If hour >= 14, it's Saturday
-        if t_parsed.hour < 14:
-            total_sec_from_midnight_sat = sec_since_midnight + 86400
-        else:
-            total_sec_from_midnight_sat = sec_since_midnight
-            
-        # Subtract 6:00 AM Start Time (21600 seconds)
-        total_sec = total_sec_from_midnight_sat - 21600
-        
-        time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
-        time_checkin = t_parsed.strftime('%I:%M %p')
-    except:
-        time_str, total_sec, time_checkin = "---", 999999, ""
-
+    # Status Formatting
     if max_miles >= total_race_dist:
-        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist)
+        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
     
     if is_dnf:
-        return "DNF", max_miles, "---", 999999, calculated_loop
+        return "DNF", max_miles, "---", 999999, calculated_loop, "---"
+
+    if max_miles == 0 and not last_time_str:
+        return "DNS", 0.0, "", 999999, 1, "---"
+
+    # Prediction Logic
+    next_loc_display = "---"
+    if avg_mph > 0:
+        # Find next station
+        current_station_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
+        next_idx = (current_station_idx + 1) % len(s_list)
+        next_base_name = s_list[next_idx]
         
+        # If next station is 'Middle out', we've rolled to the next lap
+        next_lap = calculated_loop + 1 if next_idx == 0 else calculated_loop
+        next_miles = ((next_lap - 1) * loop_dist) + m_map[next_base_name]
+        
+        if next_miles <= total_race_dist:
+            dist_to_go = next_miles - max_miles
+            sec_to_next = (dist_to_go / avg_mph) * 3600
+            arrival_total_sec = (total_sec + 21600 + sec_to_next) % 86400
+            arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
+            next_loc_display = f"{next_base_name}<br><small>Est: {arrival_time}</small>"
+
     status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if furthest_station else "Started"
-    return status_text, max_miles, time_str, total_sec, calculated_loop
+    return status_text, max_miles, time_str, total_sec, calculated_loop, next_loc_display
 
 @st.cache_data(ttl=30)
 def load_data(mode, query=""):
@@ -137,7 +153,7 @@ def load_data(mode, query=""):
     
     results = []
     for _, row in active_df.iterrows():
-        status, miles, t_disp, t_sec, lap = get_status(row, mode)
+        status, miles, t_disp, t_sec, lap, next_loc = get_status(row, mode)
         
         is_inactive = any(x in status for x in ["DNF", "DNS"])
         avg_speed = "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph"
@@ -146,7 +162,7 @@ def load_data(mode, query=""):
         results.append({
             "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
             "Status": status, "Total Miles": miles, "Race Time": race_time,
-            "Avg Speed": avg_speed, "SortSeconds": t_sec, "Lap": lap if status != "DNS" else ""
+            "Avg Speed": avg_speed, "Next Expected": next_loc, "SortSeconds": t_sec, "Lap": lap if status != "DNS" else ""
         })
     
     if not results: return pd.DataFrame()
@@ -174,6 +190,7 @@ try:
             td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; text-align: center !important; }
             tr:hover { background-color: #fafafa; }
             td:nth-child(2), th:nth-child(2) { text-align: left !important; }
+            small { color: #666; display: block; margin-top: 4px; }
             </style>
             """, unsafe_allow_html=True
         )
