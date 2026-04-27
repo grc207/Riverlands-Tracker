@@ -117,4 +117,82 @@ def get_status(row, mode):
                         is_dnf = True
 
     try:
-        t_parsed =
+        t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
+        sec = t_parsed.hour * 3600 + t_parsed.minute * 60
+        total_sec = sec - (6 * 3600) if t_parsed.hour >= 14 else (sec + 86400) - (6 * 3600)
+        h, m = divmod(total_sec // 60, 60)
+        time_str, avg_mph = f"{int(h)}h {int(m):02d}m", max_miles / (total_sec / 3600) if total_sec > 0 else 0
+        time_checkin = t_parsed.strftime('%I:%M %p')
+    except:
+        time_str, total_sec, avg_mph, time_checkin = "---", 999999, 0, ""
+
+    if max_miles >= 100.0:
+        status_text = "Finished!"
+    elif is_dnf or (total_sec > RACE_LIMIT_HOURS * 3600):
+        status_text = "DNF"
+    else:
+        status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if time_checkin else furthest_station
+
+    next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
+    display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
+
+    return status_text, max_miles, display_time, total_sec, final_loop, next_exp
+
+@st.cache_data(ttl=60)
+def load_data(mode, query=""):
+    df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
+    if df['is_blank'].any():
+        gap = df[df['is_blank']].index[0]
+        relay_df, miler_df = df.loc[:gap-1].copy(), df.loc[gap+1:].copy()
+    else: relay_df, miler_df = df.copy(), pd.DataFrame()
+
+    active_df = miler_df if mode == "100 Miler" else relay_df
+    active_df = active_df[active_df['Team/Runner'].notna()]
+    
+    bib_col = [c for c in df.columns if 'Bib' in c][0]
+    if query:
+        active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).str.contains(query, case=False)]
+    
+    results = []
+    for _, row in active_df.iterrows():
+        status, miles, t_disp, t_sec, loop, next_exp = get_status(row, mode)
+        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and "DNF" not in status and "DNS" not in status) else 0.0
+        results.append({
+            "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
+            "Status": status, "Total Miles": miles, "Race Time": t_disp,
+            "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
+            "Next Expected": next_exp, "SortSeconds": t_sec, "Lap": loop if miles > 0 else ""
+        })
+    
+    if not results: return pd.DataFrame()
+    full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    
+    mask = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
+    full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+    full_df.loc[~mask, 'Pos'] = None
+    return full_df
+
+# 5. UI Render
+view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
+search_query = st.text_input("Search Name or Bib", placeholder="Search...")
+
+try:
+    master_df = load_data(view_mode, search_query)
+    if not master_df.empty:
+        master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
+        html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
+        st.markdown(
+            """
+            <style>
+            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
+            th { background-color: #f0f2f6; text-align: left; padding: 12px; }
+            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+            tr:hover { background-color: #fafafa; }
+            </style>
+            """, unsafe_allow_html=True
+        )
+        st.write(html_table, unsafe_allow_html=True)
+except Exception as e: st.error(f"Error: {e}")
