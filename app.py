@@ -40,6 +40,7 @@ MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
+    max_loops = 4 if mode == "100 Miler" else 5
     
     max_miles = 0.0
     furthest_station = ""
@@ -61,6 +62,9 @@ def get_status(row, mode):
             try: lap_num = (int(col_name.split('.')[-1]) + 1) if "." in col_name else 1
             except: lap_num = 1
             
+            # Skip if the sheet has entries for laps beyond the race limit
+            if lap_num > max_loops: continue
+            
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             
             if ":" in val_str or "dnf" in val_str:
@@ -73,9 +77,11 @@ def get_status(row, mode):
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
-    # HARD CAP: Ensure mileage never exceeds 100.0
-    if max_miles > 100.0:
-        max_miles = 100.0
+    # HARD CAPS: No extra miles or loops
+    if max_miles > (max_loops * loop_dist):
+        max_miles = (max_loops * loop_dist)
+    if current_lap > max_loops:
+        current_lap = max_loops
 
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1
@@ -89,7 +95,7 @@ def get_status(row, mode):
     except:
         time_str, total_sec, time_checkin = "---", 999999, ""
 
-    if max_miles >= 100.0:
+    if max_miles >= (max_loops * loop_dist):
         status_text = "Finished!"
     elif is_dnf_anywhere:
         status_text = "DNF"
@@ -103,14 +109,11 @@ def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Split sheet
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap_indices = df[mask].index
     gap = gap_indices[0] if len(gap_indices) > 0 else len(df)
     
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
-    
-    # FILTER: Remove any rows where Team/Runner is still empty/NaN
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
@@ -122,7 +125,6 @@ def load_data(mode, query=""):
     results = []
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, lap = get_status(row, mode)
-        
         is_inactive = any(x in status for x in ["DNF", "DNS"])
         avg_speed = "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph"
         race_time = "---" if is_inactive else t_disp
@@ -147,19 +149,4 @@ search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
 try:
     master_df = load_data(view_mode, search_query)
-    if not master_df.empty:
-        master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
-        html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
-        st.markdown(
-            """
-            <style>
-            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
-            th { background-color: #f0f2f6; text-align: left; padding: 12px; font-weight: bold; }
-            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
-            tr:hover { background-color: #fafafa; }
-            </style>
-            """, unsafe_allow_html=True
-        )
-        st.write(html_table, unsafe_allow_html=True)
-except Exception as e:
-    st.error(f"Syncing data... ({e})")
+    if not
