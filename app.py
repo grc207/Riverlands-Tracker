@@ -12,7 +12,6 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchz
 START_TIME_HOUR = 6 
 RACE_LIMIT_HOURS = 32
 
-# Map station names to their distance within a single loop
 MAP_100 = {"Start": 0.0, "Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 MAP_RELAY = {"Start": 0.0, "Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
@@ -20,30 +19,31 @@ def get_status(row, mode):
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     
-    # Track the furthest progress found anywhere in the row
     max_miles = 0.0
     furthest_val = ""
     furthest_station = "Start"
     max_loop = 1
     
-    # Counter for stations to handle loops
+    # Station tracking to handle multiple loops correctly
     station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Arrive S/F": 0}
     
-    # 1. SCAN THE WHOLE ROW: Identify furthest progress regardless of gaps
+    # SCAN ENTIRE ROW: Find the absolute furthest point reached
     for col_name, val in row.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
         
-        # We only care about columns with valid race station names and time entries
+        # Check for time entries (human entered: e.g., "8:53:00 AM")
         if ":" in val_str and "dnf" not in val_str.lower():
+            # Standardize column naming conventions found in the sheet
             clean_name = col_name.split('.')[0].strip()
-            if "Start/Finish" in clean_name: clean_name = "Arrive S/F"
+            if "Start/Finish" in clean_name or "Arrive S/F" in clean_name:
+                clean_name = "Arrive S/F"
             
             if clean_name in station_counts:
                 station_counts[clean_name] += 1
                 curr_loop = station_counts[clean_name]
                 curr_miles = ((curr_loop - 1) * loop_dist) + mileage_map[clean_name]
                 
-                # If this entry represents further progress than anything we've seen yet, save it
+                # High Water Mark Logic: always take the furthest distance
                 if curr_miles >= max_miles:
                     max_miles = curr_miles
                     furthest_val = val_str
@@ -53,37 +53,39 @@ def get_status(row, mode):
     if max_miles == 0.0:
         return "Race Started", 0.0, "", 0, 1
 
-    # 2. FIXED WINDOW TIME LOGIC (Your 2 PM Rule)
+    # FIXED WINDOW TIME LOGIC: 2 PM Rule (Independent of previous cells)
     try:
+        # Standardize time format for parsing
         t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
         seconds_from_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
         
-        # 2 PM Rule: Finish >= 2 PM = Day 1; Finish < 2 PM = Day 2
+        # If time is 2:00 PM or later, assume Day 1 (Same Day)
+        # If time is before 2:00 PM, assume Day 2 (Next Day)
         if t_parsed.hour >= 14:
             total_sec = seconds_from_midnight - (START_TIME_HOUR * 3600)
         else:
             total_sec = (seconds_from_midnight + 86400) - (START_TIME_HOUR * 3600)
             
         h, m = divmod(total_sec // 60, 60)
-        time_str = f"{int(h)}h {int(m):02d}m"
+        time_display = f"{int(h)}h {int(m):02d}m"
     except:
-        time_str, total_sec = "---", 999999
+        time_display, total_sec = "---", 999999
 
-    # 3. STATUS & DNF DETERMINATION
+    # Determine Display Status
     status_text = "Finished!" if max_miles >= 100.0 else furthest_station
     
-    # Manual DNF or exceeding 32 hours
+    # Apply DNF if manual entry found or time exceeds 32 hours
     if row.astype(str).str.contains('DNF|dnf', case=False).any() or (total_sec > RACE_LIMIT_HOURS * 3600 and status_text != "Finished!"):
         status_text = "DNF"
 
-    return status_text, max_miles, time_str, total_sec, max_loop
+    return status_text, max_miles, time_display, total_sec, max_loop
 
 @st.cache_data(ttl=10)
 def load_data(mode):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Split sheets based on blank row in Team/Runner column
+    # Split Relay vs 100 Miler based on the physical blank row in the sheet
     df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     if df['is_blank'].any():
         gap = df[df['is_blank']].index[0]
@@ -92,14 +94,14 @@ def load_data(mode):
         relay_df, miler_df = df.copy(), pd.DataFrame()
 
     active_df = miler_df if mode == "100 Miler" else relay_df
-    # Filter out empty rows or test headers
+    # Clean up non-runner rows
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
     results = []
 
     for _, row in active_df.iterrows():
-        status, miles, t_display, t_sec, loop = get_status(row, mode)
+        status, miles, t_str, t_sec, loop = get_status(row, mode)
         avg_pace = miles / (t_sec / 3600) if t_sec > 0 else 0.0
         
         results.append({
@@ -108,7 +110,7 @@ def load_data(mode):
             "Bib": row[bib_col],
             "Status": status,
             "Total Miles": miles,
-            "Race Time": t_display,
+            "Race Time": t_str,
             "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
             "SortSeconds": t_sec,
             "Lap": loop if miles > 0 else ""
@@ -116,17 +118,17 @@ def load_data(mode):
     
     if not results: return pd.DataFrame()
 
-    # Sort by Mileage (Descending) then Time (Ascending)
+    # FINAL SORT: 1. Distance (Highest first) 2. Time (Lowest first)
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Assign Position for non-DNF
+    # Rank non-DNF participants
     mask = full_df['Status'] != "DNF"
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
     
     return full_df
 
-# --- UI ---
+# --- Main App ---
 st.title("Riverlands 100 Live Leaderboard")
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
@@ -143,6 +145,6 @@ try:
             }
         )
     else:
-        st.info("Awaiting race data...")
+        st.info("Awaiting race updates...")
 except Exception as e:
-    st.error(f"Error: {e}")
+    st.error(f"Display Error: {e}")
