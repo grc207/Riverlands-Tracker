@@ -9,28 +9,23 @@ st.set_page_config(page_title="Riverlands 100 Tracker", layout="wide")
 SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0"
 
 # Race Start: May 2nd, 2026 @ 6:00 AM
-START_TIME = datetime.datetime(2026, 5, 2, 6, 0)
+START_TIME_HOUR = 6 
 RACE_LIMIT_HOURS = 32
-END_TIME = START_TIME + datetime.timedelta(hours=RACE_LIMIT_HOURS, minutes=2)
 
-# Mileage Maps
 MAP_100 = {"Start": 0.0, "Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 MAP_RELAY = {"Start": 0.0, "Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
-def get_status(row, mode, now):
+def get_status(row, mode):
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     
-    # We find the furthest column that contains a ":"
-    furthest_idx = -1
     furthest_val = ""
     furthest_station = ""
-    
-    # Track occurrences of stations to determine loop number
+    current_loop = 1
     station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Arrive S/F": 0}
     
-    items = list(row.items())
-    for i, (col_name, val) in enumerate(items):
+    # 1. Scan row for furthest timestamp
+    for col_name, val in row.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
         if ":" in val_str and "dnf" not in val_str.lower():
             clean_name = col_name.split('.')[0].strip()
@@ -38,55 +33,48 @@ def get_status(row, mode, now):
             
             if clean_name in station_counts:
                 station_counts[clean_name] += 1
-                furthest_idx = i
                 furthest_val = val_str
                 furthest_station = clean_name
                 current_loop = station_counts[clean_name]
 
-    if furthest_idx == -1:
+    if not furthest_val:
         return "Race Started", 0.0, "", 0, 1
 
-    # MILEAGE TABULATION: (Loops completed * loop distance) + current station distance
+    # 2. Mileage Calculation (Credits gaps automatically)
     total_miles = ((current_loop - 1) * loop_dist) + mileage_map[furthest_station]
     
-    # IMPROVED TIME LOGIC: Handle Day 1 vs Day 2
+    # 3. Fixed Window Time Logic
     try:
-        # Standardize time string and parse
-        clean_time = furthest_val.split(' ')[0]
-        t_parsed = pd.to_datetime(clean_time, errors='coerce').time()
+        t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
+        # Seconds from midnight for the parsed time
+        seconds_from_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
         
-        # Determine Day based on station index and hour
-        # Relay has 5 loops, 100M has 4. Use loop number and hour to detect overnight.
-        day = 2 # Start day
-        if current_loop >= 3:
-            # If it's a late loop and the hour is small (early morning), it's Day 2
-            if t_parsed.hour < 11: # 11am cutoff for "next day" logic
-                day = 3
-        
-        actual_dt = datetime.datetime(2026, 5, day, t_parsed.hour, t_parsed.minute)
-        delta = actual_dt - START_TIME
-        total_sec = int(delta.total_seconds())
-        
-        # Format Hh Mm
-        h = total_sec // 3600
-        m = (total_sec % 3600) // 60
-        time_str = f"{h}h {m:02d}m"
+        # If time is 2:00 PM or later, assume Same Day (Day 1)
+        # Otherwise, assume Next Day (Day 2)
+        if t_parsed.hour >= 14:
+            # Day 1: Elapsed = Time - 6:00 AM
+            total_sec = seconds_from_midnight - (START_TIME_HOUR * 3600)
+        else:
+            # Day 2: Elapsed = (Time + 24h) - 6:00 AM
+            total_sec = (seconds_from_midnight + 86400) - (START_TIME_HOUR * 3600)
+            
+        h, m = divmod(total_sec // 60, 60)
+        time_str = f"{int(h)}h {int(m):02d}m"
     except:
         time_str, total_sec = "---", 999999
 
-    # Status Determination
     status_text = "Finished!" if total_miles >= 100.0 else furthest_station
-    if row.astype(str).str.contains('DNF|dnf', case=False).any() or (now > END_TIME and status_text != "Finished!"):
+    if row.astype(str).str.contains('DNF|dnf', case=False).any() or (total_sec > RACE_LIMIT_HOURS * 3600 and status_text != "Finished!"):
         status_text = "DNF"
 
     return status_text, total_miles, time_str, total_sec, current_loop
 
-@st.cache_data(ttl=15)
-def load_data(mode, now):
+@st.cache_data(ttl=10)
+def load_data(mode):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Divide Relay from 100 Miler based on the blank row
+    # Split sheets based on blank row
     df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     if df['is_blank'].any():
         gap = df[df['is_blank']].index[0]
@@ -101,7 +89,7 @@ def load_data(mode, now):
     results = []
 
     for _, row in active_df.iterrows():
-        status, miles, t_display, t_sec, loop = get_status(row, mode, now)
+        status, miles, t_display, t_sec, loop = get_status(row, mode)
         avg_pace = miles / (t_sec / 3600) if t_sec > 0 else 0.0
         
         results.append({
@@ -118,11 +106,9 @@ def load_data(mode, now):
     
     if not results: return pd.DataFrame()
 
-    full_df = pd.DataFrame(results)
-    # Sort: Furthest Distance (Desc), then Fastest Time (Asc)
-    full_df = full_df.sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    # Final Sort: Mileage (Desc), then Race Time (Asc)
+    full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Leaderboard Position
     mask = full_df['Status'] != "DNF"
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
@@ -130,13 +116,11 @@ def load_data(mode, now):
     return full_df
 
 # --- UI ---
-now = datetime.datetime.now()
 st.title("Riverlands 100 Live Leaderboard")
-
 view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
 
 try:
-    master_df = load_data(view_mode, now)
+    master_df = load_data(view_mode)
     if not master_df.empty:
         st.dataframe(
             master_df.drop(columns=['SortSeconds']),
@@ -148,6 +132,6 @@ try:
             }
         )
     else:
-        st.info("Awaiting race data results...")
+        st.info("Awaiting race data...")
 except Exception as e:
-    st.error(f"Error updating leaderboard: {e}")
+    st.error(f"Error: {e}")
