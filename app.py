@@ -12,6 +12,7 @@ SHEET_CSV_URL = "https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchz
 START_TIME_HOUR = 6 
 RACE_LIMIT_HOURS = 32
 
+# Map station names to their distance within a single loop
 MAP_100 = {"Start": 0.0, "Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 MAP_RELAY = {"Start": 0.0, "Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
@@ -19,43 +20,48 @@ def get_status(row, mode):
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     
+    # Track the furthest progress found anywhere in the row
+    max_miles = 0.0
     furthest_val = ""
-    furthest_station = ""
-    current_loop = 1
+    furthest_station = "Start"
+    max_loop = 1
+    
+    # Counter for stations to handle loops
     station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Arrive S/F": 0}
     
-    # 1. Scan row for furthest timestamp
+    # 1. SCAN THE WHOLE ROW: Identify furthest progress regardless of gaps
     for col_name, val in row.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
+        
+        # We only care about columns with valid race station names and time entries
         if ":" in val_str and "dnf" not in val_str.lower():
             clean_name = col_name.split('.')[0].strip()
             if "Start/Finish" in clean_name: clean_name = "Arrive S/F"
             
             if clean_name in station_counts:
                 station_counts[clean_name] += 1
-                furthest_val = val_str
-                furthest_station = clean_name
-                current_loop = station_counts[clean_name]
+                curr_loop = station_counts[clean_name]
+                curr_miles = ((curr_loop - 1) * loop_dist) + mileage_map[clean_name]
+                
+                # If this entry represents further progress than anything we've seen yet, save it
+                if curr_miles >= max_miles:
+                    max_miles = curr_miles
+                    furthest_val = val_str
+                    furthest_station = clean_name
+                    max_loop = curr_loop
 
-    if not furthest_val:
+    if max_miles == 0.0:
         return "Race Started", 0.0, "", 0, 1
 
-    # 2. Mileage Calculation (Credits gaps automatically)
-    total_miles = ((current_loop - 1) * loop_dist) + mileage_map[furthest_station]
-    
-    # 3. Fixed Window Time Logic
+    # 2. FIXED WINDOW TIME LOGIC (Your 2 PM Rule)
     try:
         t_parsed = pd.to_datetime(furthest_val, errors='coerce').time()
-        # Seconds from midnight for the parsed time
         seconds_from_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
         
-        # If time is 2:00 PM or later, assume Same Day (Day 1)
-        # Otherwise, assume Next Day (Day 2)
+        # 2 PM Rule: Finish >= 2 PM = Day 1; Finish < 2 PM = Day 2
         if t_parsed.hour >= 14:
-            # Day 1: Elapsed = Time - 6:00 AM
             total_sec = seconds_from_midnight - (START_TIME_HOUR * 3600)
         else:
-            # Day 2: Elapsed = (Time + 24h) - 6:00 AM
             total_sec = (seconds_from_midnight + 86400) - (START_TIME_HOUR * 3600)
             
         h, m = divmod(total_sec // 60, 60)
@@ -63,18 +69,21 @@ def get_status(row, mode):
     except:
         time_str, total_sec = "---", 999999
 
-    status_text = "Finished!" if total_miles >= 100.0 else furthest_station
+    # 3. STATUS & DNF DETERMINATION
+    status_text = "Finished!" if max_miles >= 100.0 else furthest_station
+    
+    # Manual DNF or exceeding 32 hours
     if row.astype(str).str.contains('DNF|dnf', case=False).any() or (total_sec > RACE_LIMIT_HOURS * 3600 and status_text != "Finished!"):
         status_text = "DNF"
 
-    return status_text, total_miles, time_str, total_sec, current_loop
+    return status_text, max_miles, time_str, total_sec, max_loop
 
 @st.cache_data(ttl=10)
 def load_data(mode):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Split sheets based on blank row
+    # Split sheets based on blank row in Team/Runner column
     df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     if df['is_blank'].any():
         gap = df[df['is_blank']].index[0]
@@ -83,6 +92,7 @@ def load_data(mode):
         relay_df, miler_df = df.copy(), pd.DataFrame()
 
     active_df = miler_df if mode == "100 Miler" else relay_df
+    # Filter out empty rows or test headers
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
@@ -106,9 +116,10 @@ def load_data(mode):
     
     if not results: return pd.DataFrame()
 
-    # Final Sort: Mileage (Desc), then Race Time (Asc)
+    # Sort by Mileage (Descending) then Time (Ascending)
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
+    # Assign Position for non-DNF
     mask = full_df['Status'] != "DNF"
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
