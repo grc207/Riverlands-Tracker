@@ -36,41 +36,58 @@ def calculate_elapsed(station_time_str, current_loop, last_loc):
         actual_dt = datetime.datetime(2026, 5, day, t.hour, t.minute)
         delta = actual_dt - START_TIME
         total_sec = int(delta.total_seconds())
-        return f"{int(total_sec//3600)}h {int((total_sec%3600)//60):02d}m", total_sec, actual_dt
+        # Format as H:MM
+        hours = total_sec // 3600
+        minutes = (total_sec % 3600) // 60
+        return f"{hours}h {minutes:02d}m", total_sec, actual_dt
     except:
         return None, None, None
 
 def get_status(row, mode):
+    # Initialize variables to track the "Furthest Known Progress"
     last_val, last_loc, total_miles, current_loop, has_data = "", "Start", 0.0, 1, False
+    
     mileage_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     
-    station_counts = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Arrive S/F": 0}
+    # We maintain a counter for how many times we've seen a specific station name
+    # to handle multiple loops correctly.
+    station_occurrence_count = {"Middle out": 0, "Conant Rd": 0, "Middle back": 0, "Arrive S/F": 0}
+    
+    # Check for manual DNF anywhere in the row
     is_manual_dnf = row.astype(str).str.contains('DNF|dnf', case=False).any()
 
+    # CRITICAL UPDATE: Scan every column. If it has a time, update the status.
+    # This ignores "gaps" and only cares about the furthest column with data.
     for col_name, val in row.items():
         val_str = str(val).strip() if pd.notnull(val) else ""
-        if val_str == "" or "dnf" in val_str.lower() or ":" not in val_str:
-            continue
+        
+        # We only care about cells with a time (containing ':')
+        if ":" in val_str and "dnf" not in val_str.lower():
+            clean_name = str(col_name).split('.')[0].strip()
+            if "Start/Finish" in clean_name: clean_name = "Arrive S/F"
 
-        clean_name = str(col_name).split('.')[0].strip()
-        if "Start/Finish" in clean_name: clean_name = "Arrive S/F"
+            if clean_name in station_occurrence_count:
+                station_occurrence_count[clean_name] += 1
+                occ_index = station_occurrence_count[clean_name] - 1
+                
+                # Update furthest progress
+                has_data = True
+                last_val = val_str
+                last_loc = clean_name
+                current_loop = station_occurrence_count[clean_name]
+                total_miles = (occ_index * loop_dist) + mileage_map[clean_name]
 
-        if clean_name in station_counts:
-            station_counts[clean_name] += 1
-            loop_idx = station_counts[clean_name] - 1
-            has_data, last_val, last_loc = True, val_str, clean_name
-            current_loop = station_counts[clean_name]
-            total_miles = (loop_idx * loop_dist) + mileage_map[clean_name]
-
+    # Calculate time based on that furthest recorded entry
     el_str, el_sec, actual_dt = calculate_elapsed(last_val, current_loop, last_loc)
 
+    # Status Determination
     if total_miles >= 100.0:
-        status_text, sort_weight = "Finished!", 200.0
+        status_text, sort_weight = "Finished!", 100.0
     elif has_data:
         status_text, sort_weight = last_loc, total_miles
     else:
-        status_text, sort_weight = "Race Started", -2.0
+        status_text, sort_weight = "Race Started", 0.0
 
     if is_manual_dnf:
         status_text, sort_weight = "DNF", -1.0
@@ -82,29 +99,22 @@ def load_data(mode, now):
     df = pd.read_csv(f"{SHEET_CSV_URL}&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # 1. Scrub obvious header/test rows
-    df = df[~df['Team/Runner'].astype(str).str.contains('Pos|ignore this line', case=False, na=False)]
-    
-    # 2. FIND THE GAP (Blank row separating Relay from 100 Miler)
-    # We look for the first row where 'Team/Runner' is empty
+    # Identify the divide between Relay (Top) and 100 Miler (Bottom)
     df['is_blank'] = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
-    
     if df['is_blank'].any():
         gap_index = df[df['is_blank']].index[0]
         relay_df = df.loc[:gap_index-1].copy()
         miler_df = df.loc[gap_index+1:].copy()
     else:
-        # Fallback if no gap is found (just in case)
         relay_df = df.copy()
         miler_df = pd.DataFrame()
 
     sub_df = miler_df if mode == "100 Miler" else relay_df
-    # Clean up any trailing blanks in the sub_df
     sub_df = sub_df[sub_df['Team/Runner'].notna() & (sub_df['Team/Runner'].astype(str).str.strip() != "")]
 
     bib_col = [c for c in df.columns if 'Bib' in c][0]
-
     results = []
+
     for _, row in sub_df.iterrows():
         status, miles, s_weight, l_time, loop, el_str, el_sec, l_dt = get_status(row, mode)
         
@@ -113,7 +123,7 @@ def load_data(mode, now):
         if status not in ["Finished!", "DNF", "DNS", "Race Started"] and avg_pace > 0:
             try:
                 curr_idx = STATION_ORDER.index(status)
-                next_station = STATION_ORDER[curr_idx + 1] if status != "Arrive S/F" else "Start"
+                next_station = STATION_ORDER[curr_idx + 1] if status != "Arrive S/F" else "Middle out"
                 m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
                 dist_to_next = m_map["Middle out"] if status == "Arrive S/F" else m_map[next_station] - m_map[status]
                 arrival_dt = l_dt + datetime.timedelta(hours=dist_to_next / avg_pace)
@@ -126,20 +136,27 @@ def load_data(mode, now):
             "Bib": row[bib_col],
             "Status": status,
             "Total Miles": miles,
-            "SortWeight": float(s_weight),
+            "SortWeight": s_weight,
             "Last Seen": l_time if status not in ["DNS", "Race Started"] else "",
             "Race Time": el_str if status not in ["DNS", "Race Started"] else "",
             "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
             "Next Expected Location": eta_display if status not in ["Finished!", "DNF", "DNS"] else "---",
-            "SortSeconds": int(el_sec) if el_sec is not None else 999999,
+            "SortSeconds": el_sec if el_sec is not None else 9999999,
             "Lap": loop if status not in ["DNS", "Race Started"] else ""
         })
     
     if not results: return pd.DataFrame()
 
-    full_df = pd.DataFrame(results).sort_values(by=['SortWeight', 'SortSeconds'], ascending=[False, True])
-    active_mask = full_df['SortWeight'] >= 0
+    full_df = pd.DataFrame(results)
+    
+    # SORTING LOGIC: Furthest Distance First, then Fastest Time (Shortest SortSeconds)
+    full_df = full_df.sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    
+    # Position Logic for all non-DNF
+    active_mask = full_df['Status'] != "DNF"
     full_df.loc[active_mask, 'Pos'] = range(1, active_mask.sum() + 1)
+    full_df.loc[~active_mask, 'Pos'] = None
+    
     return full_df
 
 # --- UI ---
@@ -154,7 +171,11 @@ try:
         st.dataframe(
             master_df.drop(columns=['SortWeight', 'SortSeconds']),
             use_container_width=True, hide_index=True,
-            column_config={"Total Miles": st.column_config.NumberColumn(format="%.1f")}
+            column_config={
+                "Pos": st.column_config.Column(width="small", alignment="center"),
+                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
+                "Lap": st.column_config.Column(alignment="center")
+            }
         )
     else:
         st.warning("No data found for this category.")
