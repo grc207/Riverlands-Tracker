@@ -78,8 +78,6 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode, che
 
     hours_to_next = dist_to_next / avg_mph
     pred_time = base_dt + datetime.timedelta(hours=hours_to_next)
-    
-    # HTML formatted for two lines
     return f"<b>{next_name}</b><br>{pred_time.strftime('%I:%M %p')}"
 
 def get_status(row, mode):
@@ -131,7 +129,7 @@ def get_status(row, mode):
 
     return status_text, max_miles, display_time, total_sec, final_loop, next_exp
 
-@st.cache_data(ttl=10)
+@st.cache_data(ttl=60) # UPDATED TTL TO 60 SECONDS
 def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
@@ -163,7 +161,6 @@ def load_data(mode, query=""):
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Rank non-DNF/DNS runners
     mask = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
     full_df.loc[~mask, 'Pos'] = None
@@ -176,20 +173,15 @@ search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
-        # Convert Pos to integer/string to remove .0
         master_df['Pos'] = master_df['Pos'].fillna('').apply(lambda x: int(x) if x != '' else '')
-        
-        # WE USE st.write with to_html() to force the <br> line breaks
         html_table = master_df.drop(columns=['SortSeconds']).to_html(escape=False, index=False)
-        
-        # Add custom CSS to make it look like a nice leaderboard
         st.markdown(
             """
             <style>
-            table { width: 100%; border-collapse: collapse; }
-            th { background-color: #f0f2f6; text-align: left; padding: 10px; }
-            td { padding: 10px; border-bottom: 1px solid #ddd; }
-            tr:hover { background-color: #f5f5f5; }
+            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
+            th { background-color: #f0f2f6; text-align: left; padding: 12px; }
+            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+            tr:hover { background-color: #fafafa; }
             </style>
             """, unsafe_allow_html=True
         )
