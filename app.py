@@ -40,7 +40,7 @@ MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    max_loops = 4 if mode == "100 Miler" else 5
+    total_race_dist = 100.0
     
     max_miles = 0.0
     furthest_station = ""
@@ -59,29 +59,30 @@ def get_status(row, mode):
         if "Start/Finish" in base_header: base_header = "Arrive S/F"
 
         if base_header in m_map:
-            try: lap_num = (int(col_name.split('.')[-1]) + 1) if "." in col_name else 1
-            except: lap_num = 1
-            
-            # Skip if the sheet has entries for laps beyond the race limit
-            if lap_num > max_loops: continue
+            try:
+                # Extracts the lap number from the column header (e.g., "Middle out.1" is Lap 2)
+                lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
+                lap_num = lap_idx + 1
+            except:
+                lap_num = 1
             
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             
+            # Record distance for any entry (Time or DNF)
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
                     max_miles = calc_miles
                     furthest_station = base_header
                     current_lap = lap_num
             
+            # Record the latest valid timestamp for pace/sorting
             if ":" in val_str:
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
-    # HARD CAPS: No extra miles or loops
-    if max_miles > (max_loops * loop_dist):
-        max_miles = (max_loops * loop_dist)
-    if current_lap > max_loops:
-        current_lap = max_loops
+    # HARD CAP at 100 Miles
+    if max_miles > total_race_dist:
+        max_miles = total_race_dist
 
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1
@@ -95,7 +96,7 @@ def get_status(row, mode):
     except:
         time_str, total_sec, time_checkin = "---", 999999, ""
 
-    if max_miles >= (max_loops * loop_dist):
+    if max_miles >= total_race_dist:
         status_text = "Finished!"
     elif is_dnf_anywhere:
         status_text = "DNF"
@@ -109,11 +110,14 @@ def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
+    # Split the sheet between Relay and 100 Miler
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap_indices = df[mask].index
     gap = gap_indices[0] if len(gap_indices) > 0 else len(df)
     
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
+    
+    # Remove empty/NaN rows
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
@@ -137,13 +141,16 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     
+    # Sort: Miles Descending, Time Ascending
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
+    
+    # Rank active runners
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
-# 5. UI Render
+# UI Render
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
@@ -159,7 +166,6 @@ try:
             th { background-color: #f0f2f6; text-align: center; padding: 12px; font-weight: bold; }
             td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; text-align: center; }
             tr:hover { background-color: #fafafa; }
-            /* Keep Runner Names left-aligned for readability */
             td:nth-child(2) { text-align: left; }
             </style>
             """, unsafe_allow_html=True
