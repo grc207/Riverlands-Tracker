@@ -94,7 +94,7 @@ def get_status(row, mode):
 
     status_text = "Finished!" if max_miles >= 100.0 else furthest_station
     
-    # DNF Logic: Keep mileage, clear time string
+    # DNF Logic: Keep mileage for sort
     if "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600 and status_text != "Finished!"):
         return "DNF", max_miles, "", total_sec, final_loop
     
@@ -130,8 +130,28 @@ def load_data(mode):
     
     if not results: return pd.DataFrame()
 
-    # Sort: Total Miles Descending, then Time Ascending
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Assign Position: Only for non-DNF/DNS runners with mileage
-    mask = (~full_df['Status'].
+    # FIXED SYNTAX HERE
+    mask = (~full_df['Status'].isin(["DNF", "DNS"])) & (full_df['Total Miles'] > 0)
+    full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+    full_df.loc[~mask, 'Pos'] = None
+    return full_df
+
+# 5. UI Render
+view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
+
+try:
+    master_df = load_data(view_mode)
+    if not master_df.empty:
+        st.dataframe(
+            master_df.drop(columns=['SortSeconds']),
+            use_container_width=True, hide_index=True,
+            column_config={
+                "Pos": st.column_config.Column(width="small", alignment="center"),
+                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
+                "Lap": st.column_config.Column(alignment="center")
+            }
+        )
+except Exception as e:
+    st.error(f"Error: {e}")
