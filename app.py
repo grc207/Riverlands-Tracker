@@ -46,7 +46,7 @@ def get_status(row, mode):
     furthest_station = ""
     last_time_str = ""
     
-    # Check for DNF anywhere in row
+    # Universal Case-Insensitive DNF Check
     row_str = " ".join(row.fillna("").astype(str)).lower()
     is_dnf = "dnf" in row_str
 
@@ -54,37 +54,31 @@ def get_status(row, mode):
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
         if val_str == "": continue
 
-        # Standardize the station name
         base_header = col_name.split('.')[0].strip()
         if "Start/Finish" in base_header: base_header = "Arrive S/F"
 
         if base_header in m_map:
-            # Determine Lap from column suffix (.1, .2, etc)
             try:
                 lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
                 lap_num = lap_idx + 1
             except:
                 lap_num = 1
             
-            # Calculate current progress
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             
-            # Update furthest point if we see a timestamp or DNF marker
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
                     max_miles = calc_miles
                     furthest_station = base_header
             
-            # Track the time for pace and status
             if ":" in val_str:
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
 
-    # --- FINAL DATA SANITY CHECKS ---
+    # Final Data Cleanup
     if max_miles > total_race_dist: max_miles = total_race_dist
     
-    # Calculate Loop correctly based on mileage
-    # 0.1 to 25.0 = Loop 1 | 25.1 to 50.0 = Loop 2 | etc.
+    # Loop Logic (Mileage-based to avoid Loop 5 errors)
     if max_miles == 0:
         calculated_loop = 1
     else:
@@ -93,11 +87,22 @@ def get_status(row, mode):
     if max_miles == 0 and not last_time_str:
         return "DNS", 0.0, "", 999999, 1
 
-    # Time/Pace Logic
+    # RESTORED: 2 PM Next-Day Logic
     try:
         t_parsed = pd.to_datetime(last_time_str, errors='coerce').time()
-        sec = t_parsed.hour * 3600 + t_parsed.minute * 60
-        total_sec = sec - (6 * 3600) if t_parsed.hour >= 6 else (sec + 86400) - (6 * 3600)
+        # Convert everything to seconds since midnight
+        sec_since_midnight = t_parsed.hour * 3600 + t_parsed.minute * 60
+        
+        # 2 PM Rule: If hour < 14 (2 PM), it's Sunday (add 24 hours)
+        # If hour >= 14, it's Saturday
+        if t_parsed.hour < 14:
+            total_sec_from_midnight_sat = sec_since_midnight + 86400
+        else:
+            total_sec_from_midnight_sat = sec_since_midnight
+            
+        # Subtract 6:00 AM Start Time (21600 seconds)
+        total_sec = total_sec_from_midnight_sat - 21600
+        
         time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
         time_checkin = t_parsed.strftime('%I:%M %p')
     except:
@@ -112,12 +117,11 @@ def get_status(row, mode):
     status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if furthest_station else "Started"
     return status_text, max_miles, time_str, total_sec, calculated_loop
 
-@st.cache_data(ttl=30) # Dropped TTL for faster refresh
+@st.cache_data(ttl=30)
 def load_data(mode, query=""):
     df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
     df.columns = [str(c).strip() for c in df.columns]
     
-    # Detect the gap between Relay and 100 Miler
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap_indices = df[mask].index
     gap = gap_indices[0] if len(gap_indices) > 0 else len(df)
@@ -148,7 +152,6 @@ def load_data(mode, query=""):
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     
-    # Ranking logic
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
