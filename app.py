@@ -47,21 +47,20 @@ MAP_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive 
 STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 
 def get_next_expected(status, current_station, current_miles, avg_mph, mode, checkin_val):
-    if status in ["Finished!", "DNF", "DNS"] or avg_mph <= 0 or not checkin_val:
+    if any(s in status for s in ["Finished!", "DNF", "DNS"]) or avg_mph <= 0 or not checkin_val:
         return "---"
     
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     
     try:
-        # Convert checkin_val (e.g., "10:09:52") to a base timestamp
-        # Logic assumes Day 2 if hour < 14 (2 PM) based on your race start logic
         t_parsed = pd.to_datetime(checkin_val, errors='coerce')
-        if t_parsed.hour < 6: # Day 2
+        # Logic to anchor prediction to the actual check-in day/time
+        if t_parsed.hour < 6: # Day 2 Morning
              base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
-        elif t_parsed.hour >= 14: # Day 1
+        elif t_parsed.hour >= 14: # Day 1 Afternoon/Night
              base_dt = datetime.datetime(2026, 5, 2, t_parsed.hour, t_parsed.minute, t_parsed.second)
-        else: # Transition morning Day 2
+        else: # Transition
              base_dt = datetime.datetime(2026, 5, 3, t_parsed.hour, t_parsed.minute, t_parsed.second)
     except:
         return "---"
@@ -75,14 +74,14 @@ def get_next_expected(status, current_station, current_miles, avg_mph, mode, che
 
     current_lap_progress = current_miles % loop_size
     next_station_progress = m_map[next_name]
-    
     dist_to_next = next_station_progress - current_lap_progress
     if dist_to_next <= 0: dist_to_next += loop_size
 
     hours_to_next = dist_to_next / avg_mph
-    # Prediction is now BASE_DT (check-in) + travel time
     pred_time = base_dt + datetime.timedelta(hours=hours_to_next)
-    return f"{next_name} @ {pred_time.strftime('%I:%M %p')}"
+    
+    # FORMAT: Two lines for prediction
+    return f"{next_name}\n{pred_time.strftime('%I:%M %p')}"
 
 def get_status(row, mode):
     m_map = MAP_100 if mode == "100 Miler" else MAP_RELAY
@@ -126,9 +125,9 @@ def get_status(row, mode):
     elif "dnf" in row_str.lower() or (total_sec > RACE_LIMIT_HOURS * 3600):
         status_text = "DNF"
     else:
-        status_text = f"{furthest_station} @ {time_checkin}" if time_checkin else furthest_station
+        # FORMAT: Two lines for current status
+        status_text = f"{furthest_station}\n{time_checkin}" if time_checkin else furthest_station
 
-    # Fix: Pass furthest_val (raw time string) to ensure prediction is based on check-in time
     next_exp = get_next_expected(status_text, furthest_station, max_miles, avg_mph, mode, furthest_val)
     display_time = "" if "DNF" in status_text or "DNS" in status_text else time_str
 
@@ -145,46 +144,4 @@ def load_data(mode, query=""):
         relay_df, miler_df = df.loc[:gap-1].copy(), df.loc[gap+1:].copy()
     else: relay_df, miler_df = df.copy(), pd.DataFrame()
 
-    active_df = miler_df if mode == "100 Miler" else relay_df
-    active_df = active_df[active_df['Team/Runner'].notna()]
-    
-    bib_col = [c for c in df.columns if 'Bib' in c][0]
-    if query:
-        active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).str.contains(query, case=False)]
-    
-    results = []
-    for _, row in active_df.iterrows():
-        status, miles, t_disp, t_sec, loop, next_exp = get_status(row, mode)
-        avg_pace = miles / (t_sec / 3600) if (t_sec > 0 and "DNF" not in status and "DNS" not in status) else 0.0
-        results.append({
-            "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
-            "Status": status, "Total Miles": miles, "Race Time": t_disp,
-            "Avg Speed": f"{avg_pace:.2f} mph" if avg_pace > 0 else "0.00 mph",
-            "Next Expected Location": next_exp, "SortSeconds": t_sec, "Lap": loop if miles > 0 else ""
-        })
-    
-    if not results: return pd.DataFrame()
-    full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
-    mask = (~full_df['Status'].str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
-    full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
-    full_df.loc[~mask, 'Pos'] = None
-    return full_df
-
-# 5. UI Render
-view_mode = st.radio("Select Category:", ["100 Miler", "Relay"], horizontal=True)
-search_query = st.text_input("Search Name or Bib", placeholder="Search...")
-
-try:
-    master_df = load_data(view_mode, search_query)
-    if not master_df.empty:
-        st.dataframe(
-            master_df.drop(columns=['SortSeconds']),
-            use_container_width=True, hide_index=True,
-            column_config={
-                "Pos": st.column_config.Column(width="small", alignment="center"),
-                "Total Miles": st.column_config.NumberColumn(format="%.1f"),
-                "Lap": st.column_config.Column(alignment="center"),
-                "Next Expected Location": st.column_config.Column(width="medium")
-            }
-        )
-except Exception as e: st.error(f"Error: {e}")
+    active_df = mil
