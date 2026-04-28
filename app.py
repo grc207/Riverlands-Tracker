@@ -20,7 +20,7 @@ st.info("**Disclaimer:** This is an independent project and is not maintained by
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 3. Timer Logic
+# 3. Dynamic Timer Logic
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 RACE_LIMIT_HOURS = 32
 now = datetime.datetime.now()
@@ -32,12 +32,15 @@ def format_delta_hhh(delta):
     return f"{hours}h {minutes:02d}m"
 
 if now < START_TIME:
+    # Countdown Mode
     st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
+    st.write("**Hours until Race Day!**")
 else:
+    # Elapsed Mode
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-st.write("**Elapsed Race Time**")
+    st.write("**Elapsed Time**")
 
 # 4. Station Configuration
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -58,7 +61,7 @@ def get_status(row, mode):
     is_dnf = "dnf" in row_str
     
     max_miles, furthest_station, last_time_str = 0.0, "", ""
-    sf_count = 0 # Track how many Arrive S/F columns we've passed
+    sf_count = 0 
 
     for col_name, val in row.items():
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
@@ -71,7 +74,7 @@ def get_status(row, mode):
             if base_header == "Arrive S/F":
                 sf_count += 1
             
-            # 2. STRICT COLUMN CAPPING: Ignore data past the final lap terminus
+            # 2. STRICT COLUMN CAPPING: Stop reading past the 4th Arrive S/F
             if sf_count > max_loops:
                 break
                 
@@ -109,7 +112,7 @@ def get_status(row, mode):
                 avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    # 3. DNF FLAG OVERRIDE (Ensures DNF wins even if text is in a 100-mile column)
+    # 3. DNF FLAG OVERRIDE
     if is_dnf:
         return "DNF", max_miles, "---", 999999, calculated_loop, "---"
         
@@ -166,7 +169,6 @@ def load_data(mode, query=""):
     
     if not results: return pd.DataFrame()
     
-    # Sorting: DNF/DNS go to bottom
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
