@@ -105,7 +105,7 @@ def get_status(row, mode):
     if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
     if max_miles == 0 and not last_time_str: return "DNS", 0.0, "", 999999, 1, "---"
 
-    # Prediction Logic (Styled to match Status)
+    # Prediction Logic with 10% Fall-off
     expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
@@ -116,7 +116,9 @@ def get_status(row, mode):
         
         if next_miles <= total_race_dist:
             dist_to_go = next_miles - max_miles
-            sec_to_next = (dist_to_go / avg_mph) * 3600
+            # Calculate base seconds at current speed, then apply 10% fatigue penalty
+            sec_to_next = (dist_to_go / avg_mph) * 3600 * 1.10
+            
             arrival_total_sec = (total_sec + 21600 + sec_to_next) % 86400
             arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
             expected_display = f"<b>{next_base}</b><br>{arrival_time}"
