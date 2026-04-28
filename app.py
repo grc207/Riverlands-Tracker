@@ -15,7 +15,7 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. st.info Disclaimer
+# 2. st.info Disclaimer 
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
@@ -54,7 +54,6 @@ def get_status(row, mode):
     max_loops = 4 if mode == "100 Miler" else 5
     total_race_dist = 100.0
     
-    # DNF CHECK
     row_str = " ".join(row.astype(str).fillna("")).lower()
     is_dnf = "dnf" in row_str
     
@@ -88,7 +87,6 @@ def get_status(row, mode):
     if max_miles > total_race_dist: max_miles = total_race_dist
     calculated_loop = 1 if max_miles == 0 else int((max_miles - 0.01) // loop_dist) + 1
 
-    # Time Parsing with 2 PM Rule
     total_sec, time_str, time_checkin, avg_mph = 999999, "---", "", 0.0
     if last_time_str:
         try:
@@ -105,7 +103,6 @@ def get_status(row, mode):
     if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
     if max_miles == 0 and not last_time_str: return "DNS", 0.0, "", 999999, 1, "---"
 
-    # Prediction Logic with 10% Fall-off
     expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
@@ -116,9 +113,8 @@ def get_status(row, mode):
         
         if next_miles <= total_race_dist:
             dist_to_go = next_miles - max_miles
-            # Calculate base seconds at current speed, then apply 10% fatigue penalty
+            # 10% Fatigue Penalty applied to the next segment
             sec_to_next = (dist_to_go / avg_mph) * 3600 * 1.10
-            
             arrival_total_sec = (total_sec + 21600 + sec_to_next) % 86400
             arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
             expected_display = f"<b>{next_base}</b><br>{arrival_time}"
@@ -164,7 +160,7 @@ ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 with ctrl_col2:
-    st.write("") # Spacer
+    st.write("") 
     if st.button("🔄 Refresh Leaderboard", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
