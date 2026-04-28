@@ -32,17 +32,15 @@ def format_delta_hhh(delta):
     return f"{hours}h {minutes:02d}m"
 
 if now < START_TIME:
-    # Countdown Mode
     st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
     st.write("**Hours until Race Day!**")
 else:
-    # Elapsed Mode
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
     st.write("**Elapsed Time**")
 
-# 4. Station Configuration
+# 4. Data Processing Logic
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 
@@ -56,7 +54,7 @@ def get_status(row, mode):
     max_loops = 4 if mode == "100 Miler" else 5
     total_race_dist = 100.0
     
-    # 1. DNF CHECK (ABSOLUTE PRIORITY)
+    # DNF CHECK
     row_str = " ".join(row.astype(str).fillna("")).lower()
     is_dnf = "dnf" in row_str
     
@@ -66,31 +64,23 @@ def get_status(row, mode):
     for col_name, val in row.items():
         val_str = str(val).strip().lower() if pd.notnull(val) else ""
         if val_str == "": continue
-
         base_header = col_name.split('.')[0].strip()
         if "Start/Finish" in base_header: base_header = "Arrive S/F"
 
         if base_header in m_map:
-            if base_header == "Arrive S/F":
-                sf_count += 1
-            
-            # 2. STRICT COLUMN CAPPING: Stop reading past the 4th Arrive S/F
-            if sf_count > max_loops:
-                break
+            if base_header == "Arrive S/F": sf_count += 1
+            if sf_count > max_loops: break
                 
             try:
                 lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
                 lap_num = lap_idx + 1
-            except:
-                lap_num = 1
+            except: lap_num = 1
             
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
-            
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
                     max_miles = calc_miles
                     furthest_station = base_header
-            
             if ":" in val_str:
                 if calc_miles >= (max_miles - 0.1):
                     last_time_str = val_str
@@ -108,22 +98,15 @@ def get_status(row, mode):
             total_sec = total_sec_from_sat - 21600
             time_str = f"{total_sec//3600}h {(total_sec%3600)//60:02d}m"
             time_checkin = t_parsed.strftime('%I:%M %p')
-            if total_sec > 0:
-                avg_mph = max_miles / (total_sec / 3600)
+            if total_sec > 0: avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    # 3. DNF FLAG OVERRIDE
-    if is_dnf:
-        return "DNF", max_miles, "---", 999999, calculated_loop, "---"
-        
-    if max_miles >= total_race_dist:
-        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
-    
-    if max_miles == 0 and not last_time_str:
-        return "DNS", 0.0, "", 999999, 1, "---"
+    if is_dnf: return "DNF", max_miles, "---", 999999, calculated_loop, "---"
+    if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+    if max_miles == 0 and not last_time_str: return "DNS", 0.0, "", 999999, 1, "---"
 
-    # Prediction Logic
-    next_loc_display = "---"
+    # Prediction Logic (Styled to match Status)
+    expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
         next_idx = (current_idx + 1) % len(s_list)
@@ -136,10 +119,10 @@ def get_status(row, mode):
             sec_to_next = (dist_to_go / avg_mph) * 3600
             arrival_total_sec = (total_sec + 21600 + sec_to_next) % 86400
             arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
-            next_loc_display = f"{next_base}<br><hr style='margin:4px 0; border:0; border-top:1px solid #ddd;'>{arrival_time}"
+            expected_display = f"<b>{next_base}</b><br>{arrival_time}"
 
     status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if furthest_station else "Started"
-    return status_text, max_miles, time_str, total_sec, calculated_loop, next_loc_display
+    return status_text, max_miles, time_str, total_sec, calculated_loop, expected_display
 
 @st.cache_data(ttl=30)
 def load_data(mode, query=""):
@@ -158,27 +141,35 @@ def load_data(mode, query=""):
     
     results = []
     for _, row in active_df.iterrows():
-        status, miles, t_disp, t_sec, lap, next_loc = get_status(row, mode)
+        status, miles, t_disp, t_sec, lap, expected = get_status(row, mode)
         is_inactive = any(x in status for x in ["DNF", "DNS"])
-        avg_speed = "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph"
         results.append({
             "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
             "Status": status, "Total Miles": miles, "Race Time": "---" if is_inactive else t_disp,
-            "Avg Speed": avg_speed, "Next Expected": next_loc, "SortSeconds": t_sec, "Lap": lap if status != "DNS" else ""
+            "Avg Speed": "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph", 
+            "Expected": expected, "SortSeconds": t_sec, "Lap": lap if status != "DNS" else ""
         })
     
     if not results: return pd.DataFrame()
-    
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
-# 5. Leaderboard UI
-view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+# 5. UI Controls
+ctrl_col1, ctrl_col2 = st.columns([3, 1])
+with ctrl_col1:
+    view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+with ctrl_col2:
+    st.write("") # Spacer
+    if st.button("🔄 Refresh Leaderboard", use_container_width=True):
+        st.cache_data.clear()
+        st.rerun()
+
 search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
+# 6. Table Rendering
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
@@ -187,10 +178,11 @@ try:
         st.markdown(
             """
             <style>
-            table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
-            th { background-color: #f0f2f6; text-align: center !important; padding: 12px; font-weight: bold; }
-            td { padding: 12px; border-bottom: 1px solid #eee; vertical-align: middle; text-align: center !important; }
-            tr:hover { background-color: #fafafa; }
+            table { width: 100%; border-collapse: collapse; font-family: sans-serif; border: 1px solid #bbb; }
+            th { background-color: #e0e0e0; text-align: center !important; padding: 12px; font-weight: bold; border: 1px solid #bbb; color: #333; }
+            td { padding: 12px; border: 1px solid #bbb; vertical-align: middle; text-align: center !important; }
+            tr:nth-child(even) { background-color: #f9f9f9; }
+            tr:hover { background-color: #f1f1f1; }
             td:nth-child(2), th:nth-child(2) { text-align: left !important; }
             </style>
             """, unsafe_allow_html=True
