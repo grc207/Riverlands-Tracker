@@ -15,13 +15,14 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. st.info Disclaimer 
+# 2. st.info Disclaimer
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
 # 3. Dynamic Timer Logic
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
+DNS_CUTOFF = datetime.datetime(2026, 5, 2, 7, 30, 0)
 RACE_LIMIT_HOURS = 32
 now = datetime.datetime.now()
 
@@ -87,6 +88,7 @@ def get_status(row, mode):
     if max_miles > total_race_dist: max_miles = total_race_dist
     calculated_loop = 1 if max_miles == 0 else int((max_miles - 0.01) // loop_dist) + 1
 
+    # Time Parsing
     total_sec, time_str, time_checkin, avg_mph = 999999, "---", "", 0.0
     if last_time_str:
         try:
@@ -99,10 +101,22 @@ def get_status(row, mode):
             if total_sec > 0: avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    if is_dnf: return "DNF", max_miles, "---", 999999, calculated_loop, "---"
-    if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
-    if max_miles == 0 and not last_time_str: return "DNS", 0.0, "", 999999, 1, "---"
+    # --- Race Day State Logic ---
+    if datetime.datetime.now() < START_TIME:
+        return "Race starts May 2nd @ 6am", 0.0, "---", 999999, 1, "---"
 
+    if is_dnf: 
+        return "DNF", max_miles, "---", 999999, calculated_loop, "---"
+    
+    if max_miles >= total_race_dist: 
+        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+
+    if max_miles == 0 and not last_time_str:
+        if datetime.datetime.now() > DNS_CUTOFF:
+            return "DNS", 0.0, "---", 999999, 1, "---"
+        return "Race Started!", 0.0, "---", 999999, 1, "<b>Middle out</b>"
+
+    # --- Progressive Fatigue Prediction ---
     expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
@@ -112,14 +126,20 @@ def get_status(row, mode):
         next_miles = ((next_lap - 1) * loop_dist) + m_map[next_base]
         
         if next_miles <= total_race_dist:
+            # Fatigue multiplier
+            if mode == "Relay":
+                penalty = 1.10
+            else:
+                # Progressive: L1=1.0, L2=1.05, L3=1.10, L4=1.15
+                penalty = 1.0 + (max(0, calculated_loop - 1) * 0.05)
+            
             dist_to_go = next_miles - max_miles
-            # 10% Fatigue Penalty applied to the next segment
-            sec_to_next = (dist_to_go / avg_mph) * 3600 * 1.10
+            sec_to_next = (dist_to_go / avg_mph) * 3600 * penalty
             arrival_total_sec = (total_sec + 21600 + sec_to_next) % 86400
             arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
             expected_display = f"<b>{next_base}</b><br>{arrival_time}"
 
-    status_text = f"<b>{furthest_station}</b><br>{time_checkin}" if furthest_station else "Started"
+    status_text = f"<b>{furthest_station}</b><br>{time_checkin}"
     return status_text, max_miles, time_str, total_sec, calculated_loop, expected_display
 
 @st.cache_data(ttl=30)
@@ -140,17 +160,24 @@ def load_data(mode, query=""):
     results = []
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, lap, expected = get_status(row, mode)
-        is_inactive = any(x in status for x in ["DNF", "DNS"])
+        is_inactive = any(x in status for x in ["DNF", "DNS", "Race starts", "Race Started"])
+        
+        # Speed logic - don't show speed if race hasn't started or no checkins yet
+        if is_inactive or t_sec == 999999 or miles == 0:
+            speed_val = "---"
+        else:
+            speed_val = f"{(miles / (t_sec / 3600)):.2f} mph"
+
         results.append({
             "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
             "Status": status, "Total Miles": miles, "Race Time": "---" if is_inactive else t_disp,
-            "Avg Speed": "---" if is_inactive else f"{(miles / (t_sec / 3600)):.2f} mph" if t_sec > 0 and t_sec != 999999 else "0.00 mph", 
-            "Expected": expected, "SortSeconds": t_sec, "Lap": lap if status != "DNS" else ""
+            "Avg Speed": speed_val, "Expected": expected, "SortSeconds": t_sec, "Lap": lap if "Race" not in status else ""
         })
     
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
-    mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS", na=False)) & (full_df['Total Miles'] > 0)
+    
+    mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS|Race", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
