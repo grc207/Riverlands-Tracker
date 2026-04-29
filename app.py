@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import time
+import pytz  # Added for timezone handling
 
 # 1. Setup & Logo
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
@@ -20,11 +21,15 @@ st.info("**Disclaimer:** This is an independent project and is not maintained by
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 3. Dynamic Timer Logic (Strictly for the clock display)
-START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
-DNS_CUTOFF = datetime.datetime(2026, 5, 2, 7, 30, 0)
+# 3. FIXED Timezone Logic
+eastern = pytz.timezone('US/Eastern')
+# Localize the start time to Eastern
+START_TIME = eastern.localize(datetime.datetime(2026, 5, 2, 6, 0, 0))
+DNS_CUTOFF = eastern.localize(datetime.datetime(2026, 5, 2, 7, 30, 0))
+# Get current time in Eastern
+now = datetime.datetime.now(eastern)
+
 RACE_LIMIT_HOURS = 32
-now = datetime.datetime.now()
 
 def format_delta_hhh(delta):
     total_seconds = int(delta.total_seconds())
@@ -41,10 +46,9 @@ else:
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
     st.write("**Elapsed Time**")
 
-# 4. Data Processing Logic
+# 4. Data Processing Logic (Remaining code remains the same)
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
-
 STATIONS_RELAY = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
@@ -55,7 +59,6 @@ def get_status(row, mode, global_has_data):
     max_loops = 4 if mode == "100 Miler" else 5
     total_race_dist = 100.0
     
-    # 1. Global Pre-Race Trigger: Data-based, not clock-based
     if not global_has_data:
         return "Race starts May 2nd @ 6am", 0.0, "---", 999999, 1, "---"
 
@@ -74,12 +77,10 @@ def get_status(row, mode, global_has_data):
         if base_header in m_map:
             if base_header == "Arrive S/F": sf_count += 1
             if sf_count > max_loops: break
-                
             try:
                 lap_idx = int(col_name.split('.')[-1]) if "." in col_name else 0
                 lap_num = lap_idx + 1
             except: lap_num = 1
-            
             calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
             if ":" in val_str or "dnf" in val_str:
                 if calc_miles >= max_miles:
@@ -92,7 +93,6 @@ def get_status(row, mode, global_has_data):
     if max_miles > total_race_dist: max_miles = total_race_dist
     calculated_loop = 1 if max_miles == 0 else int((max_miles - 0.01) // loop_dist) + 1
 
-    # Time Parsing
     total_sec, time_str, time_checkin, avg_mph = 999999, "---", "", 0.0
     if last_time_str:
         try:
@@ -105,20 +105,15 @@ def get_status(row, mode, global_has_data):
             if total_sec > 0: avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    # --- Active Race States ---
     if is_dnf: 
         return "DNF", max_miles, "---", 999999, calculated_loop, "---"
-    
     if max_miles >= total_race_dist: 
         return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
-
-    # Start trigger for when data exists in the sheet but not for this specific runner
     if max_miles == 0 and not last_time_str:
-        if datetime.datetime.now() > DNS_CUTOFF:
+        if datetime.datetime.now(eastern) > DNS_CUTOFF:
             return "DNS", 0.0, "---", 999999, 1, "---"
         return "Race Started!", 0.0, "---", 999999, 1, "<b>Middle out</b>"
 
-    # --- Progressive Fatigue Prediction ---
     expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
@@ -126,7 +121,6 @@ def get_status(row, mode, global_has_data):
         next_base = s_list[next_idx]
         next_lap = calculated_loop + 1 if next_idx == 0 else calculated_loop
         next_miles = ((next_lap - 1) * loop_dist) + m_map[next_base]
-        
         if next_miles <= total_race_dist:
             penalty = 1.10 if mode == "Relay" else 1.0 + (max(0, calculated_loop - 1) * 0.05)
             dist_to_go = next_miles - max_miles
@@ -146,30 +140,22 @@ def load_data(mode, query=""):
     gap = df[mask].index[0] if len(df[mask]) > 0 else len(df)
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
-    
-    # Check if ANY station columns in the entire active set have data
     station_cols = [c for c in active_df.columns if any(s in c for s in ["Middle", "Conant", "Arrive", "Start/Finish"])]
     global_has_data = active_df[station_cols].notna().any().any()
-
     bib_col = [c for c in df.columns if 'Bib' in c][0]
     active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
-
     if query:
         active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).contains(query, case=False)]
-    
     results = []
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, lap, expected = get_status(row, mode, global_has_data)
         is_inactive = any(x in status for x in ["DNF", "DNS", "Race starts", "Race Started"])
-        
         speed_val = "---" if (is_inactive or t_sec == 999999 or miles == 0) else f"{(miles / (t_sec / 3600)):.2f} mph"
-
         results.append({
             "Pos": 0, "Team/Runner": row['Team/Runner'], "Bib": row[bib_col],
             "Status": status, "Total Miles": miles, "Race Time": "---" if is_inactive else t_disp,
             "Avg Speed": speed_val, "Expected": expected, "SortSeconds": t_sec, "Lap": lap if "Race" not in status else ""
         })
-    
     if not results: return pd.DataFrame()
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS|Race", na=False)) & (full_df['Total Miles'] > 0)
@@ -177,7 +163,7 @@ def load_data(mode, query=""):
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
-# 5. UI Controls
+# UI Controls
 ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
@@ -189,7 +175,6 @@ with ctrl_col2:
 
 search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
-# 6. Table Rendering
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
