@@ -20,12 +20,10 @@ st.info("**Disclaimer:** This is an independent project and is not maintained by
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 3. MANUAL Timezone Logic (UTC to EDT is exactly -4 hours)
-# We use datetime.datetime.utcnow() which is standard in all Python versions.
+# 3. MANUAL Timezone Logic (UTC to EDT)
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) 
 
-# Set race dates (using standard datetime without timezone objects)
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 DNS_CUTOFF = datetime.datetime(2026, 5, 2, 7, 30, 0)
 RACE_LIMIT_HOURS = 32
@@ -36,7 +34,6 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# Header logic based on manual "now" (Eastern Time)
 if now < START_TIME:
     st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
     st.write("**Hours until Race Day!**")
@@ -46,7 +43,7 @@ else:
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
     st.write("**Elapsed Race Time**")
 
-# 4. Data Processing (Rest of your logic remains the same)
+# 4. Data Processing
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 STATIONS_RELAY = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -135,14 +132,24 @@ def load_data(mode, query=""):
     df.columns = [str(c).strip() for c in df.columns]
     mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
     gap = df[mask].index[0] if len(df[mask]) > 0 else len(df)
+    
+    # Filter by mode first
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
-    station_cols = [c for c in active_df.columns if any(s in c for s in ["Middle", "Conant", "Arrive", "Start/Finish"])]
-    global_has_data = active_df[station_cols].notna().any().any()
+    
     bib_col = [c for c in df.columns if 'Bib' in c][0]
     active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
-    if query:
-        active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).contains(query, case=False)]
+
+    # SEARCH LOGIC: Only apply to 100 Miler view
+    if mode == "100 Miler" and query:
+        query = query.strip().lower()
+        active_df = active_df[
+            active_df['Team/Runner'].astype(str).str.lower().str.contains(query, na=False) | 
+            active_df[bib_col].astype(str).str.lower().str.contains(query, na=False)
+        ]
+    
+    station_cols = [c for c in active_df.columns if any(s in c for s in ["Middle", "Conant", "Arrive", "Start/Finish"])]
+    global_has_data = active_df[station_cols].notna().any().any()
     
     results = []
     for _, row in active_df.iterrows():
@@ -165,12 +172,17 @@ def load_data(mode, query=""):
 ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+
+# Search box logic
+search_query = ""
+if view_mode == "100 Miler":
+    search_query = st.text_input("🔍 Search 100-Miler Name or Bib:", placeholder="Type name...")
+
 with ctrl_col2:
-    if st.button("🔄 Refresh Leaderboard", use_container_width=True):
+    st.write("")
+    if st.button("🔄 Refresh", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-
-search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
 # 6. Table Rendering
 try:
@@ -191,5 +203,7 @@ try:
             """, unsafe_allow_html=True
         )
         st.write(html_table, unsafe_allow_html=True)
+    elif search_query:
+        st.warning(f"No results found for '{search_query}'")
 except Exception as e:
     st.error(f"Syncing data... ({e})")
