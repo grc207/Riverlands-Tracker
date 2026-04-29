@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import datetime
 import time
-import pytz 
 
 # 1. Setup & Logo
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
@@ -16,16 +15,19 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. st.info Disclaimer
+# 2. Disclaimer
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 3. FIXED Timezone & Countdown Logic
-eastern = pytz.timezone('US/Eastern')
-START_TIME = eastern.localize(datetime.datetime(2026, 5, 2, 6, 0, 0))
-DNS_CUTOFF = eastern.localize(datetime.datetime(2026, 5, 2, 7, 30, 0))
-now = datetime.datetime.now(eastern)
+# 3. MANUAL Timezone Logic (UTC to EDT is exactly -4 hours)
+# We use datetime.datetime.utcnow() which is standard in all Python versions.
+utc_now = datetime.datetime.utcnow()
+now = utc_now - datetime.timedelta(hours=4) 
+
+# Set race dates (using standard datetime without timezone objects)
+START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
+DNS_CUTOFF = datetime.datetime(2026, 5, 2, 7, 30, 0)
 RACE_LIMIT_HOURS = 32
 
 def format_delta_hhh(delta):
@@ -34,6 +36,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
+# Header logic based on manual "now" (Eastern Time)
 if now < START_TIME:
     st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
     st.write("**Hours until Race Day!**")
@@ -41,10 +44,9 @@ else:
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-    # Label updated per user image
     st.write("**Elapsed Race Time**")
 
-# 4. Data Processing
+# 4. Data Processing (Rest of your logic remains the same)
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 STATIONS_RELAY = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -106,7 +108,7 @@ def get_status(row, mode, global_has_data):
     if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
     
     if max_miles == 0 and not last_time_str:
-        if datetime.datetime.now(eastern) > DNS_CUTOFF:
+        if now > DNS_CUTOFF:
             return "DNS", 0.0, "---", 999999, 1, "---"
         return "Race Started!", 0.0, "---", 999999, 1, "<b>Middle out</b>"
 
