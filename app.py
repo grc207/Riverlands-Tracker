@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import time
-import pytz  # Added for timezone handling
+import pytz 
 
 # 1. Setup & Logo
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
@@ -16,19 +16,16 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. st.info Disclaimer
+# 2. Disclaimer
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!\n\n"
         "Some updates may take a few minutes to refresh.")
 
-# 3. FIXED Timezone Logic
+# 3. Eastern Timezone & Countdown Logic
 eastern = pytz.timezone('US/Eastern')
-# Localize the start time to Eastern
 START_TIME = eastern.localize(datetime.datetime(2026, 5, 2, 6, 0, 0))
 DNS_CUTOFF = eastern.localize(datetime.datetime(2026, 5, 2, 7, 30, 0))
-# Get current time in Eastern
 now = datetime.datetime.now(eastern)
-
 RACE_LIMIT_HOURS = 32
 
 def format_delta_hhh(delta):
@@ -44,9 +41,9 @@ else:
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-    st.write("**Elapsed Time**")
+    st.write("**Elapsed Race Time**") # Label updated per image
 
-# 4. Data Processing Logic (Remaining code remains the same)
+# 4. Data Processing Logic
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 STATIONS_RELAY = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -59,12 +56,12 @@ def get_status(row, mode, global_has_data):
     max_loops = 4 if mode == "100 Miler" else 5
     total_race_dist = 100.0
     
+    # Global Pre-Race Trigger: Data-based
     if not global_has_data:
         return "Race starts May 2nd @ 6am", 0.0, "---", 999999, 1, "---"
 
     row_str = " ".join(row.astype(str).fillna("")).lower()
     is_dnf = "dnf" in row_str
-    
     max_miles, furthest_station, last_time_str = 0.0, "", ""
     sf_count = 0 
 
@@ -93,6 +90,7 @@ def get_status(row, mode, global_has_data):
     if max_miles > total_race_dist: max_miles = total_race_dist
     calculated_loop = 1 if max_miles == 0 else int((max_miles - 0.01) // loop_dist) + 1
 
+    # Time Parsing
     total_sec, time_str, time_checkin, avg_mph = 999999, "---", "", 0.0
     if last_time_str:
         try:
@@ -105,15 +103,16 @@ def get_status(row, mode, global_has_data):
             if total_sec > 0: avg_mph = max_miles / (total_sec / 3600)
         except: pass
 
-    if is_dnf: 
-        return "DNF", max_miles, "---", 999999, calculated_loop, "---"
-    if max_miles >= total_race_dist: 
-        return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+    if is_dnf: return "DNF", max_miles, "---", 999999, calculated_loop, "---"
+    if max_miles >= total_race_dist: return "Finished!", total_race_dist, time_str, total_sec, int(total_race_dist // loop_dist), "N/A"
+    
+    # Start and DNS Logic
     if max_miles == 0 and not last_time_str:
         if datetime.datetime.now(eastern) > DNS_CUTOFF:
             return "DNS", 0.0, "---", 999999, 1, "---"
         return "Race Started!", 0.0, "---", 999999, 1, "<b>Middle out</b>"
 
+    # Progressive Fatigue Prediction
     expected_display = "---"
     if avg_mph > 0:
         current_idx = s_list.index(furthest_station) if furthest_station in s_list else -1
@@ -129,8 +128,7 @@ def get_status(row, mode, global_has_data):
             arrival_time = (datetime.datetime(2026, 1, 1, 0, 0) + datetime.timedelta(seconds=arrival_total_sec)).strftime('%I:%M %p')
             expected_display = f"<b>{next_base}</b><br>{arrival_time}"
 
-    status_text = f"<b>{furthest_station}</b><br>{time_checkin}"
-    return status_text, max_miles, time_str, total_sec, calculated_loop, expected_display
+    return f"<b>{furthest_station}</b><br>{time_checkin}", max_miles, time_str, total_sec, calculated_loop, expected_display
 
 @st.cache_data(ttl=30)
 def load_data(mode, query=""):
@@ -140,12 +138,16 @@ def load_data(mode, query=""):
     gap = df[mask].index[0] if len(df[mask]) > 0 else len(df)
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
+    
+    # Check for any existing data entries
     station_cols = [c for c in active_df.columns if any(s in c for s in ["Middle", "Conant", "Arrive", "Start/Finish"])]
     global_has_data = active_df[station_cols].notna().any().any()
+
     bib_col = [c for c in df.columns if 'Bib' in c][0]
     active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
     if query:
         active_df = active_df[active_df['Team/Runner'].astype(str).str.contains(query, case=False) | active_df[bib_col].astype(str).contains(query, case=False)]
+    
     results = []
     for _, row in active_df.iterrows():
         status, miles, t_disp, t_sec, lap, expected = get_status(row, mode, global_has_data)
@@ -163,18 +165,18 @@ def load_data(mode, query=""):
     full_df.loc[~mask_rank, 'Pos'] = None
     return full_df
 
-# UI Controls
+# 5. UI Controls
 ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 with ctrl_col2:
-    st.write("") 
     if st.button("🔄 Refresh Leaderboard", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 search_query = st.text_input("Search Name or Bib", placeholder="Search...")
 
+# 6. Table Rendering
 try:
     master_df = load_data(view_mode, search_query)
     if not master_df.empty:
