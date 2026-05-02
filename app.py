@@ -67,7 +67,6 @@ def get_status(row, mode, global_has_data):
                 if calc_miles >= max_miles:
                     max_miles, furthest_station, last_time_str = calc_miles, base_header, val_str
 
-    # FIX: Ensure all row items are strings before joining to avoid the "float found" error
     row_text = " ".join(map(str, row.values)).lower()
     
     if "dnf" in row_text: 
@@ -90,15 +89,15 @@ def load_data(mode, query=""):
         name_col_name = df.columns[0]
         bib_col_name = df.columns[1]
 
-        # Clean Bibs
+        # FIX: Robustly handle Bib conversion to avoid "int64" errors on empty strings
         df[bib_col_name] = pd.to_numeric(df[bib_col_name], errors='coerce')
-        df = df[df[bib_col_name].notna()]
+        df = df.dropna(subset=[bib_col_name]) # Drop rows where Bib is missing or invalid
 
         # Filter by Bib Range
         is_relay = (df[bib_col_name] >= 400) & (df[bib_col_name] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
 
-        # Final check for valid names
+        # Clean Name column
         active_df = active_df[active_df[name_col_name].notna()]
         active_df = active_df[~active_df[name_col_name].astype(str).str.lower().isin(['runner', 'team', 'status'])]
 
@@ -106,7 +105,6 @@ def load_data(mode, query=""):
             active_df = active_df[active_df[name_col_name].astype(str).str.contains(query, case=False) | 
                                   active_df[bib_col_name].astype(str).str.contains(query)]
 
-        # Check for live data
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
 
         results = []
@@ -115,7 +113,7 @@ def load_data(mode, query=""):
             results.append({
                 "Pos": 0, 
                 "Team/Runner": row[name_col_name], 
-                "Bib": int(row[bib_col_name]),
+                "Bib": int(row[bib_col_name]), # Now safe to convert to int
                 "Status": status, 
                 "Total Miles": miles, 
                 "Race Time": r_time, 
