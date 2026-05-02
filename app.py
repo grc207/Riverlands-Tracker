@@ -16,8 +16,7 @@ with col2:
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
 # 2. Disclaimer
-st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
-        "All information may not be timely or accurate.")
+st.info("**Disclaimer:** This is an independent project and is not maintained by the race director.")
 
 # 3. Timezone Logic (UTC to EDT)
 utc_now = datetime.datetime.utcnow()
@@ -25,19 +24,13 @@ now = utc_now - datetime.timedelta(hours=4)
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 RACE_LIMIT_HOURS = 32
 
-def format_delta_hhh(delta):
-    total_seconds = int(delta.total_seconds())
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return f"{hours}h {minutes:02d}m"
-
 if now < START_TIME:
-    st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
+    delta = START_TIME - now
+    st.subheader(f"⏱️ {delta.seconds // 3600 + delta.days * 24}h {(delta.seconds // 60) % 60:02d}m")
     st.write("**Countdown to Race Start**")
 else:
-    elapsed_diff = now - START_TIME
-    display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
-    st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
+    elapsed = min(now - START_TIME, datetime.timedelta(hours=RACE_LIMIT_HOURS))
+    st.subheader(f"⏱️ {elapsed.seconds // 3600 + elapsed.days * 24}h {(elapsed.seconds // 60) % 60:02d}m")
     st.write("**Elapsed Race Time**")
 
 # 4. Processing Logic
@@ -53,28 +46,24 @@ def get_status(row, mode, global_has_data):
     if not global_has_data:
         return "Race starts May 2nd @ 6am", 0.0, "---", 999999, "---"
 
-    max_miles, furthest_station, last_time_str = 0.0, "", ""
+    max_miles, furthest_station = 0.0, ""
     for col_name, val in row.items():
         val_str = str(val).strip().lower()
         if ":" in val_str:
-            base_header = col_name.split('.')[0].strip()
-            if "Start/Finish" in base_header: base_header = "Arrive S/F"
-            if base_header in m_map:
+            base = col_name.split('.')[0].strip()
+            if "Start/Finish" in base: base = "Arrive S/F"
+            if base in m_map:
                 try:
-                    lap_num = int(col_name.split('.')[-1]) + 1 if "." in col_name else 1
-                except: lap_num = 1
-                calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
-                if calc_miles >= max_miles:
-                    max_miles, furthest_station, last_time_str = calc_miles, base_header, val_str
+                    lap = int(col_name.split('.')[-1]) + 1 if "." in col_name else 1
+                except: lap = 1
+                dist = ((lap - 1) * loop_dist) + m_map[base]
+                if dist >= max_miles:
+                    max_miles, furthest_station = dist, base
 
-    row_text = " ".join(map(str, row.values)).lower()
-    if "dnf" in row_text: 
-        return "DNF", max_miles, "---", 999999, "---"
-    if max_miles >= total_race_dist: 
-        return "Finished!", total_race_dist, "---", 0, "N/A"
-    if max_miles == 0: 
-        return "Not Started", 0.0, "---", 999999, "<b>Middle out</b>"
-
+    row_str = " ".join(map(str, row.values)).lower()
+    if "dnf" in row_str: return "DNF", max_miles, "---", 999999, "---"
+    if max_miles >= total_race_dist: return "Finished!", total_race_dist, "---", 0, "N/A"
+    if max_miles == 0: return "Not Started", 0.0, "---", 999999, "<b>Middle out</b>"
     return f"<b>{furthest_station}</b>", max_miles, "In Progress", 500, "---"
 
 @st.cache_data(ttl=30)
@@ -82,53 +71,51 @@ def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
         df = pd.read_csv(url)
-        df.columns = [str(c).strip() for c in df.columns]
+        # 1. Find the Bib column index
+        bib_idx = None
+        for i, col in enumerate(df.columns):
+            if "Bib" in str(col):
+                bib_idx = i
+                break
         
-        name_col_name = df.columns[0]
-        bib_col_name = df.columns[1]
+        if bib_idx is None: return pd.DataFrame()
 
-        # REFINED CLEANING: Strip non-numeric junk and convert to float first
-        df[bib_col_name] = pd.to_numeric(df[bib_col_name].astype(str).str.replace(r'[^0-9.]', '', regex=True), errors='coerce')
-        df = df.dropna(subset=[bib_col_name])
+        # 2. Identify Names as the column exactly one to the left of Bib
+        name_col = df.columns[bib_idx - 1]
+        bib_col = df.columns[bib_idx]
 
-        # Classification
-        is_relay = (df[bib_col_name] >= 400) & (df[bib_col_name] < 500)
+        # 3. Filter rows that have an actual numeric Bib
+        df['Bib_Numeric'] = pd.to_numeric(df[bib_col], errors='coerce')
+        df = df.dropna(subset=['Bib_Numeric'])
+
+        # 4. Separate Relay (400s) from 100 Milers
+        is_relay = (df['Bib_Numeric'] >= 400) & (df['Bib_Numeric'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
 
-        # Clean invalid runner names
-        active_df = active_df[active_df[name_col_name].notna()]
-        active_df = active_df[~active_df[name_col_name].astype(str).str.lower().isin(['runner', 'team', 'status', 'nan', ''])]
-
+        # 5. Filter by search query
         if query:
-            active_df = active_df[active_df[name_col_name].astype(str).str.contains(query, case=False) | 
-                                  active_df[bib_col_name].astype(str).str.contains(query)]
+            active_df = active_df[active_df[name_col].astype(str).str.contains(query, case=False) | 
+                                  active_df[bib_col].astype(str).str.contains(query)]
 
+        # Check for live check-in data (":")
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
 
         results = []
         for _, row in active_df.iterrows():
-            try:
-                # Defensive check for Bib value
-                raw_bib = row[bib_col_name]
-                if pd.isna(raw_bib): continue
-                bib_val = int(float(raw_bib))
-                
-                status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
-                results.append({
-                    "Pos": 0, 
-                    "Team/Runner": row[name_col_name], 
-                    "Bib": bib_val,
-                    "Status": status, 
-                    "Total Miles": miles, 
-                    "Race Time": r_time, 
-                    "Expected": expected, 
-                    "SortSec": s_sec
-                })
-            except:
-                continue # Skip rows that still cause conversion issues
+            status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
+            results.append({
+                "Pos": 0, 
+                "Team/Runner": str(row[name_col]), 
+                "Bib": str(int(row['Bib_Numeric'])), 
+                "Status": status, 
+                "Total Miles": miles, 
+                "Race Time": r_time, 
+                "Expected": expected, 
+                "SortSec": s_sec
+            })
 
         if not results: return pd.DataFrame()
-
+        
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSec'], ascending=[False, True])
         mask = (full_df['Total Miles'] > 0) & (~full_df['Status'].str.contains("Not Started|Race"))
         full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
@@ -151,9 +138,9 @@ data = load_data(view_mode, search)
 if not data.empty:
     st.markdown("""<style>
         table { width: 100%; border-collapse: collapse; font-family: sans-serif; }
-        th { background-color: #f2f2f2; padding: 12px; border: 1px solid #ddd; font-weight: bold; }
-        td { padding: 12px; border: 1px solid #ddd; text-align: center; vertical-align: middle; }
-        td:nth-child(2) { text-align: left; font-weight: 500; }
+        th { background-color: #f2f2f2; padding: 12px; border: 1px solid #ddd; font-weight: bold; text-align: center !important; }
+        td { padding: 12px; border: 1px solid #ddd; text-align: center !important; vertical-align: middle; }
+        td:nth-child(2) { text-align: left !important; font-weight: 500; }
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
