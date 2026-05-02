@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import datetime
-import time
 
 # 1. Setup
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
@@ -35,7 +34,6 @@ def get_status(row, mode, has_data):
     m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     
-    # REMOVED DNS CHECK: If no race data exists, just show the start time info
     if not has_data: 
         return "Race starts May 2nd @ 6am", 0.0, 999999, "<b>Middle out</b>"
 
@@ -51,7 +49,6 @@ def get_status(row, mode, has_data):
                 dist = ((lap - 1) * loop_dist) + m_map[base]
                 if dist >= max_miles: max_miles, furthest_station = dist, base
 
-    # If the race has data but this specific runner hasn't hit a station yet
     if max_miles == 0: 
         return "Waiting to Start", 0.0, 999999, "<b>Middle out</b>"
         
@@ -62,17 +59,27 @@ def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
         df = pd.read_csv(url, dtype=str).fillna("")
-        df.columns = [str(c).strip() for c in df.columns]
         
-        # TARGETED COLUMN PICKING based on image_11f919.png
-        name_col = next((c for c in df.columns if "Team/Runner" in c), None)
-        bib_col = next((c for c in df.columns if "Bib" in c), None)
+        # Clean headers: remove spaces and normalize to lowercase for searching
+        clean_headers = [str(c).strip() for c in df.columns]
+        df.columns = clean_headers
+        
+        # FUZZY SEARCH: Look for a column that has 'Runner' OR 'Team' in it
+        name_col = next((c for c in clean_headers if "runner" in c.lower() or "team" in c.lower()), None)
+        # Look for a column that has 'Bib' in it
+        bib_col = next((c for c in clean_headers if "bib" in c.lower()), None)
 
         if not name_col or not bib_col:
-            st.error("Could not find 'Team/Runner' or 'Bib' columns.")
-            return pd.DataFrame()
+            # Absolute fallback if keywords fail: use indices based on your visual layout
+            bib_idx = next((i for i, c in enumerate(clean_headers) if "bib" in c.lower()), -1)
+            if bib_idx != -1:
+                name_col = clean_headers[bib_idx - 2] # 2nd to the left of Bib
+                bib_col = clean_headers[bib_idx]
+            else:
+                st.error(f"Could not map columns. Available: {clean_headers[:5]}")
+                return pd.DataFrame()
 
-        # Filter valid bibs
+        # Filtering
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -82,7 +89,6 @@ def load_data(mode, query=""):
         if query:
             active_df = active_df[active_df[name_col].str.contains(query, case=False, na=False)]
         
-        # Check if any station data (timestamps) exists yet
         has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
         
         results = []
@@ -101,7 +107,7 @@ def load_data(mode, query=""):
         if not results: return pd.DataFrame()
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
         
-        # Ranking
+        # Rank only those on course
         mask = (full_df['Total Miles'] > 0)
         if mask.any():
             full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
@@ -110,10 +116,10 @@ def load_data(mode, query=""):
         return full_df.drop(columns=['Sort'])
         
     except Exception as e:
-        st.error(f"Syncing Error: {e}")
+        st.error(f"Error loading sheet: {e}")
         return pd.DataFrame()
 
-# 4. UI
+# 4. UI Rendering
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:") if view_mode == "100 Miler" else ""
 
@@ -132,4 +138,4 @@ if not data.empty:
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No data found.")
+    st.info("Searching for race data...")
