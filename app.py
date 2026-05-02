@@ -38,8 +38,10 @@ def clean_time_to_minutes(val):
     try:
         val = str(val).strip().upper()
         if ":" not in val: return None
+        # Handle cases like "11:05 AM" or "11:05"
         ts = pd.to_datetime(val).time()
         dt = datetime.datetime(2026, 5, 2, ts.hour, ts.minute)
+        # If time is 12:00 AM - 5:59 AM, assume it's Sunday morning (Race Day + 1)
         if ts.hour < 6: dt += datetime.timedelta(days=1)
         return int((dt - START_TIME).total_seconds() // 60)
     except:
@@ -50,9 +52,10 @@ def get_runner_data(row, mode):
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
+    # Defaults for "On Course" runners
     best_dist, best_stat, best_time_str, best_time_mins, best_loop = 0.0, "Start", "---", 0, 1
     
-    # SEQUENTIAL LOCK: Runner must pass through laps in order
+    # Check laps sequentially
     for lap in range(1, max_loops + 1):
         lap_cols = MAP[lap]
         lap_found = False
@@ -67,11 +70,14 @@ def get_runner_data(row, mode):
                     best_stat = STATION_NAMES[i]
                     best_loop = lap
                     lap_found = True
-        if not lap_found: break
+        
+        # Sequential Lock: If we found no data in this lap, don't look at next lap
+        if not lap_found:
+            break
             
     return best_dist, best_stat, best_time_str, best_time_mins, best_loop
 
-# 3. Load
+# 3. Load Data
 @st.cache_data(ttl=0)
 def load():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
@@ -79,29 +85,34 @@ def load():
     return pd.read_csv(io.StringIO(res.text), header=None, dtype=str)
 
 df = load()
-view = st.radio("Race Category:", ["100 Miler", "Relay"], horizontal=True)
+view = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 
 results = []
 for i in range(len(df)):
     row = df.iloc[i]
-    name, bib = str(row.iloc[0]), str(row.iloc[1])
+    name, bib = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
     
-    if bib.isdigit():
+    if bib.isdigit() and len(name) > 1:
         b_val = int(bib)
-        if (view == "Relay") == (400 <= b_val < 500):
-            miles, stat, t_str, t_mins, loop = get_runner_data(row, view)
+        is_relay_bib = 400 <= b_val < 500
+        
+        # Only process runners for the active toggle
+        if (view == "Relay") == is_relay_bib:
+            miles, stat, t_str, t_mins, loop_num = get_runner_data(row, view)
             
-            # MPH & Race Time
+            # MPH Calculation
             mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
-            r_time = f"{t_mins // 60}h {t_mins % 60}m"
+            race_time_display = f"{t_mins // 60}h {t_mins % 60}m" if t_mins > 0 else "0h 0m"
             
-            # Expected Next Calculation
+            # Expected Next
             expected_html = "---"
-            if mph > 0 and miles < (4 * 25.0 if view == "100 Miler" else 5 * 20.0):
+            max_dist = (4 * 25.0) if view == "100 Miler" else (5 * 20.0)
+            
+            if mph > 0 and miles < max_dist:
                 curr_idx = STATION_NAMES.index(stat)
                 next_idx = (curr_idx + 1) % 4
                 next_st_name = STATION_NAMES[next_idx]
-                target_lap = loop + 1 if (next_idx == 0 and curr_idx == 3) else loop
+                target_lap = loop_num + 1 if (next_idx == 0 and curr_idx == 3) else loop_num
                 
                 dist_list = M_100 if view == "100 Miler" else M_RELAY
                 l_size = 25.0 if view == "100 Miler" else 20.0
@@ -111,17 +122,21 @@ for i in range(len(df)):
                 arrival = START_TIME + datetime.timedelta(minutes=t_mins + mins_to_next)
                 expected_html = f"<div class='expected-box'>{next_st_name}<br><span class='sub-text'>{arrival.strftime('%-I:%M %p')}</span></div>"
 
-            # Sort: Miles (Desc), then Minutes (Asc)
-            sort_key = (miles * 10000) - t_mins
+            # Custom Sort Rank
+            sort_rank = (miles * 10000) - t_mins
             
             results.append({
-                "Pos": 0, "Name": name, "Bib": bib, "Loop": loop, "Miles": miles,
+                "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
                 "Status (Last Seen)": f"<div class='status-box'>{stat}<br><span class='sub-text'>{t_str}</span></div>",
-                "Expected Next": expected_html, "MPH": mph, "Race Time": r_time, "sort": sort_key
+                "Expected Next": expected_html, "MPH": mph, "Race Time": race_time_display, 
+                "Loop": loop_num, "sort": sort_rank
             })
 
 if results:
     f_df = pd.DataFrame(results).sort_values("sort", ascending=False)
     f_df["Pos"] = range(1, len(f_df) + 1)
-    display_cols = ["Pos", "Name", "Bib", "Loop", "Miles", "Status (Last Seen)", "Expected Next", "MPH", "Race Time"]
+    # Order with Loop at the end
+    display_cols = ["Pos", "Name", "Bib", "Miles", "Status (Last Seen)", "Expected Next", "MPH", "Race Time", "Loop"]
     st.write(f_df[display_cols].to_html(escape=False, index=False), unsafe_allow_html=True)
+else:
+    st.info("No runners found for this category.")
