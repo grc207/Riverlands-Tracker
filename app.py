@@ -26,11 +26,13 @@ RACE_LIMIT_HOURS = 32
 
 if now < START_TIME:
     delta = START_TIME - now
-    st.subheader(f"⏱️ {delta.seconds // 3600 + delta.days * 24}h {(delta.seconds // 60) % 60:02d}m")
+    hours_total = delta.seconds // 3600 + delta.days * 24
+    st.subheader(f"⏱️ {hours_total}h {(delta.seconds // 60) % 60:02d}m")
     st.write("**Countdown to Race Start**")
 else:
     elapsed = min(now - START_TIME, datetime.timedelta(hours=RACE_LIMIT_HOURS))
-    st.subheader(f"⏱️ {elapsed.seconds // 3600 + elapsed.days * 24}h {(elapsed.seconds // 60) % 60:02d}m")
+    hours_total = elapsed.seconds // 3600 + elapsed.days * 24
+    st.subheader(f"⏱️ {hours_total}h {(elapsed.seconds // 60) % 60:02d}m")
     st.write("**Elapsed Race Time**")
 
 # 4. Processing Logic
@@ -70,61 +72,52 @@ def get_status(row, mode, global_has_data):
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        # Load raw data as objects (strings) to prevent auto-conversion to int64
-        df = pd.read_csv(url, dtype=object)
+        # FORCE ALL DATA TO BE STRINGS IMMEDIATELY
+        df = pd.read_csv(url, dtype=str, low_memory=False)
         
-        # 1. Identify Bib column position
+        # 1. Locate the Bib column
         bib_idx = None
         for i, col in enumerate(df.columns):
             if "Bib" in str(col):
                 bib_idx = i
                 break
         
-        if bib_idx is None: return pd.DataFrame()
+        if bib_idx is None or bib_idx == 0:
+            return pd.DataFrame()
 
-        # 2. Identify Names as the column one cell to the left of Bib
-        name_col = df.columns[bib_idx - 1]
-        bib_col = df.columns[bib_idx]
+        # 2. Identify Names/Teams as the cell directly to the left of Bib
+        name_col_name = df.columns[bib_idx - 1]
+        bib_col_name = df.columns[bib_idx]
 
-        # 3. Clean Bib column - Keep as string but filter for numeric contents
-        def is_relay_bib(val):
-            try:
-                v = int(float(str(val).strip()))
-                return 400 <= v < 500
-            except: return False
+        # 3. Create a numeric helper for filtering, but keep the original strings for display
+        df['_bib_num'] = pd.to_numeric(df[bib_col_name], errors='coerce')
+        df = df.dropna(subset=['_bib_num'])
 
-        def is_100_bib(val):
-            try:
-                v = int(float(str(val).strip()))
-                return v < 400 or v >= 500
-            except: return False
+        # 4. Filter by Relay vs 100 Miler
+        is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
+        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
 
-        if mode == "Relay":
-            active_df = df[df[bib_col].apply(is_relay_bib)].copy()
-        else:
-            active_df = df[df[bib_col].apply(is_100_bib)].copy()
-
-        # 4. Search Filter
+        # 5. UI Search
         if query:
             active_df = active_df[
-                active_df[name_col].astype(str).str.contains(query, case=False, na=False) | 
-                active_df[bib_col].astype(str).str.contains(query, na=False)
+                active_df[name_col_name].str.contains(query, case=False, na=False) | 
+                active_df[bib_col_name].str.contains(query, na=False)
             ]
 
-        # 5. Check for live timing data
+        # Check for colon (timing data)
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
 
         results = []
         for _, row in active_df.iterrows():
             status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
             
-            # Format Bib cleanly (remove .0 if it exists)
-            clean_bib = str(row[bib_col]).split('.')[0]
+            # Format display bib (removes .0 if it was parsed as float earlier)
+            display_bib = str(int(row['_bib_num']))
 
             results.append({
                 "Pos": 0, 
-                "Team/Runner": str(row[name_col]), 
-                "Bib": clean_bib, 
+                "Team/Runner": str(row[name_col_name]), 
+                "Bib": display_bib, 
                 "Status": status, 
                 "Total Miles": miles, 
                 "Race Time": r_time, 
@@ -141,7 +134,7 @@ def load_data(mode, query=""):
         
         return full_df.drop(columns=['SortSec'])
     except Exception as e:
-        st.error(f"Syncing data... ({e})")
+        st.error(f"Error connecting to data: {e}")
         return pd.DataFrame()
 
 # 5. UI Rendering
@@ -162,4 +155,4 @@ if not data.empty:
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No participants found in this category.")
+    st.info("Waiting for data sync or no participants found.")
