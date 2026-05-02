@@ -35,12 +35,14 @@ def calculate_metrics_dynamic(row, station_map, mode):
     
     max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
     
+    # Iterate through the map to find the FURTHEST piece of data in this specific row
     for lap in range(1, max_loops + 1):
         for i, st_name in enumerate(STATION_NAMES):
             col_idx = station_map.get((lap, st_name.lower()))
             if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                if val and val not in ["", "-", "nan", "None", "0"]:
+                # If the cell isn't empty and isn't a placeholder
+                if val and val.lower() not in ["", "-", "nan", "none", "0"]:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
@@ -68,6 +70,7 @@ def calculate_metrics_dynamic(row, station_map, mode):
         expected_dt = now + datetime.timedelta(hours=hours_to_next)
         expected_str = expected_dt.strftime("%-I:%M %p")
 
+    # Display cleanup
     display_time = last_time.split(" ")[-1] if " " in last_time else last_time
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{display_time}</span></div>"
     
@@ -78,33 +81,36 @@ def calculate_metrics_dynamic(row, station_map, mode):
 def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
-        # Increased timeout for spotty connections
         response = requests.get(url, timeout=15)
+        # Skip 2 rows to land on Row 3 (Headers)
         return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str)
     except Exception as e:
-        st.error(f"Data Fetch Error: {e}")
+        st.error(f"Sync failed: {e}")
         return None
 
 # 4. Processing
-# Initialize buster if not present
 if 'buster' not in st.session_state:
     st.session_state['buster'] = int(time.time())
 
 df_raw = load_raw_data(st.session_state['buster'])
 
 if df_raw is not None:
+    # Row 3 is now index 0. Clean the headers.
     headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
     
-    # Station Mapping Logic
+    # AGGRESSIVE MAPPING: Scan the whole row for each station name
     station_map = {}
-    last_found = -1
     for lap in range(1, 6):
         for st_name in STATION_NAMES:
-            for col_idx in range(last_found + 1, len(headers)):
-                if st_name.lower() in headers[col_idx]:
-                    station_map[(lap, st_name.lower())] = col_idx
-                    last_found = col_idx
-                    break
+            target = st_name.lower()
+            # Try to find the nth occurrence of this station name to match the loop
+            count = 0
+            for col_idx, h_text in enumerate(headers):
+                if target in h_text:
+                    count += 1
+                    if count == lap:
+                        station_map[(lap, target)] = col_idx
+                        break
 
     df_runners = df_raw.iloc[1:].copy()
     
@@ -114,7 +120,7 @@ if df_raw is not None:
     with col_a:
         view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
     with col_b:
-        if st.button("🔄 Refresh Data"):
+        if st.button("🔄 Refresh Data Now"):
             st.cache_data.clear()
             st.session_state['buster'] = int(time.time())
             st.rerun()
@@ -124,8 +130,7 @@ if df_raw is not None:
         try:
             name = str(row.iloc[0]).strip()
             bib_str = str(row.iloc[1]).strip() if len(row) > 1 else ""
-            
-            if not bib_str.isdigit() or not name: continue
+            if not bib_str.isdigit() or not name or name.lower() == "nan": continue
             
             bib = int(bib_str)
             is_relay = 400 <= bib < 500
@@ -138,18 +143,11 @@ if df_raw is not None:
                     "Next Station": n_st, "Expected": n_time, "sort_val": s_val
                 })
         except:
-            continue # Skip individual row if it's broken
+            continue
 
     if results:
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         final_df['Pos'] = range(1, len(final_df) + 1)
         st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
-        
-        st.markdown(f"""
-            <div class='disclaimer'>
-                <b>Data Current as of:</b> {now.strftime('%H:%M:%S')} EDT<br>
-                Predictions are pace-based estimates.
-            </div>
-        """, unsafe_allow_html=True)
     else:
-        st.info("Waiting for data to populate for this category...")
+        st.info("Searching for runner data... try clicking Refresh if the sheet was just updated.")
