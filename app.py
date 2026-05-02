@@ -27,7 +27,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Positional Data Processing
+# 3. Positional Data Processing Logic
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -40,15 +40,16 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
-    # We read sequentially to the right of the Bib column
+    # Read every cell to the right of the Bib column
     for lap in range(1, max_loops + 1):
-        # Assumes a 5-column block per lap (4 stations + 1 buffer/spacer)
+        # Calculation assumes 5 columns per lap block (4 stations + 1 spacer)
         start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
         
         for i in range(4):
             col_idx = start_search_idx + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
+                # Identify a time value by the presence of a colon
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
@@ -66,20 +67,20 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading
+# 4. Hardened Data Loading Block
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
+    # Using a timestamp t in the URL to bypass any stale Google cache
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # Load everything as raw objects to bypass dtype errors in IMG_4608.jpeg
-        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=object).fillna("")
+        # Crucial Fix: dtype=object and low_memory=False prevents the IMG_4610.jpeg error
+        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=object, low_memory=False).fillna("")
         
-        # Identify Bib and Name indices from the first loaded row
+        # Identify indices for Name and Bib dynamically from the first row of data
         headers = df_raw.iloc[0].astype(str).tolist()
         bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), 1)
         name_idx = next((i for i, h in enumerate(headers) if "runner" in h.lower() or "team" in h.lower()), 0)
 
-        # Process data rows
         df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
@@ -108,11 +109,13 @@ def load_data(mode, query=""):
             
         return full_df.drop(columns=['sort_val'])
     except Exception as e:
+        # Captures the specific error text if the loader still fails
         st.error(f"Sync Error: {e}")
         return pd.DataFrame()
 
-# 5. UI
+# 5. User Interface
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
+
 if now > START_TIME:
     st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
@@ -130,5 +133,6 @@ if not data.empty:
 else:
     st.info("Waiting for race data...")
 
+# Auto-refresh every 15 seconds
 time.sleep(15)
 st.rerun()
