@@ -65,17 +65,24 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading - Cleaned for dtype errors
+# 4. Data Loading - Total Reset Version
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # We load the data as-is first, with NO type enforcement
-        df_raw = pd.read_csv(url, skiprows=2, header=None)
+        # We use engine='python' and dtype=object to stop the C-engine from crashing
+        # on mixed data types or hidden characters.
+        df_raw = pd.read_csv(
+            url, 
+            skiprows=2, 
+            header=None, 
+            engine='python', 
+            dtype=object, 
+            na_filter=False
+        )
         
-        # This is the critical fix for the IMG_4608.jpeg error:
-        # We manually fill empty cells and force EVERYTHING to a string ourselves.
-        df_raw = df_raw.fillna("").astype(str)
+        # Ensure everything is a string and strip whitespace
+        df_raw = df_raw.astype(str).apply(lambda x: x.str.strip())
         
         # Identify Bib and Name indices
         headers = df_raw.iloc[0].tolist()
@@ -85,7 +92,7 @@ def load_data(mode, query=""):
         # Process data rows
         df = df_raw.iloc[1:].copy()
         
-        # Convert Bib to numeric only for the sake of filtering Relay vs 100
+        # Force conversion of Bib for filtering logic
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -97,12 +104,18 @@ def load_data(mode, query=""):
             
         results = []
         for _, row in active_df.iterrows():
-            # This logic now works because every 'row' is guaranteed to be text/strings
+            # Now we look at the row columns for station data
             status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
-                "Pos": "", "Team/Runner": row.iloc[name_idx], "Bib": str(int(row['_bib_num'])),
-                "Status": status, "Miles": miles, "Speed": f"{speed} mph", 
-                "Next": expected, "Loop": loop, "sort_val": sort_val
+                "Pos": "", 
+                "Team/Runner": row.iloc[name_idx], 
+                "Bib": str(int(row['_bib_num'])),
+                "Status": status, 
+                "Miles": miles, 
+                "Speed": f"{speed} mph", 
+                "Next": expected, 
+                "Loop": loop, 
+                "sort_val": sort_val
             })
             
         if not results: return pd.DataFrame()
@@ -114,8 +127,10 @@ def load_data(mode, query=""):
             
         return full_df.drop(columns=['sort_val'])
     except Exception as e:
+        # This will catch and display the exact text of the error if it still fails
         st.error(f"Sync Error: {e}")
         return pd.DataFrame()
+        
 # 5. UI
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 if now > START_TIME:
