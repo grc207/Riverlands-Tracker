@@ -12,8 +12,10 @@ st.markdown("""
     <style>
     th { text-align: center !important; background-color: #f2f2f2; }
     td { text-align: center !important; border-bottom: 1px solid #ddd; }
-    td:nth-child(2) { text-align: left !important; font-weight: bold; }
+    td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 150px;}
     .status-box { line-height: 1.2; font-weight: bold; color: #1e3a8a; }
+    .time-sub { font-size: 0.85em; color: #666; font-weight: normal; }
+    .disclaimer { font-size: 0.8em; color: #888; text-align: center; margin-top: 20px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -33,32 +35,51 @@ def calculate_metrics_dynamic(row, station_map, mode):
     
     max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
     
+    # Track progress through loops and stations
     for lap in range(1, max_loops + 1):
         for i, st_name in enumerate(STATION_NAMES):
             col_idx = station_map.get((lap, st_name.lower()))
             if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                
-                # REFINED LOGIC: If the cell isn't empty and isn't just a dash/placeholder
                 if val and val not in ["", "-", "nan", "None", "0"]:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
 
+    # Default for runners who haven't hit first station
     if max_miles == 0:
-        return "On Course", 0.0, "---", 0.0, STATION_NAMES[0], 1, 0.1
+        return "On Course", 0.0, "---", "0.0", STATION_NAMES[0], "---", 0.1
+
+    # Logic for finishers
     if max_miles >= (max_loops * loop_dist):
-        return "<b>FINISHED!</b>", max_miles, "---", 0.0, "---", max_loops, 999
+        return "<b>FINISHED!</b>", max_miles, last_time, "---", "---", "---", 999
     
-    speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
-    next_idx = (STATION_NAMES.index(last_st) + 1) % 4
+    # PACE & PREDICTIONS
+    elapsed_hours = (now - START_TIME).total_seconds() / 3600
+    speed = max_miles / elapsed_hours if elapsed_hours > 0 else 0
+    
+    # Calculate Next Station
+    curr_idx = STATION_NAMES.index(last_st)
+    next_idx = (curr_idx + 1) % 4
     next_st = STATION_NAMES[next_idx]
     
-    # Clean up timestamp display if it's a long date-time string
+    # Calculate Expected Time
+    next_dist = ((current_lap - 1) * loop_dist) + m_list[next_idx]
+    if next_idx == 0 and curr_idx == 3: # Moving to next lap
+        next_dist = (current_lap * loop_dist) + m_list[0]
+        
+    miles_to_go = next_dist - max_miles
+    if speed > 0:
+        hours_to_next = miles_to_go / speed
+        expected_dt = now + datetime.timedelta(hours=hours_to_next)
+        expected_str = expected_dt.strftime("%-I:%M %p")
+    else:
+        expected_str = "---"
+
     display_time = last_time.split(" ")[-1] if " " in last_time else last_time
-    status = f"<div class='status-box'>{last_st}<br><span style='font-size:0.85em; color:#555;'>{display_time}</span></div>"
+    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{display_time}</span></div>"
     
-    return status, max_miles, last_time, speed, next_st, current_lap, max_miles
+    return status, max_miles, last_time, f"{speed:.1f}", next_st, expected_str, max_miles
 
 # 3. Data Loader
 @st.cache_data(ttl=0)
@@ -66,7 +87,6 @@ def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
         response = requests.get(url, timeout=5)
-        # Skip 2 rows to reach Row 3 (Headers)
         return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str)
     except:
         return None
@@ -77,7 +97,7 @@ df_raw = load_raw_data(int(time.time()))
 if df_raw is not None:
     headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
     
-    # Map Stations based on Row 3 labels
+    # Dynamic Map (Skips ghost columns 9, 10 etc.)
     station_map = {}
     last_found = -1
     for lap in range(1, 6):
@@ -89,35 +109,46 @@ if df_raw is not None:
                     break
 
     df_runners = df_raw.iloc[1:].copy()
+    
+    st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
     
     results = []
     for _, row in df_runners.iterrows():
-        # Get Bib (usually column 1 or 2)
+        name = str(row.iloc[0]).strip()
         bib_str = str(row.iloc[1]).strip() if len(row) > 1 else ""
-        if not bib_str.isdigit(): continue
+        if not bib_str.isdigit() or not name: continue
         
         bib = int(bib_str)
         is_relay = 400 <= bib < 500
         
         if (view_mode == "Relay" and is_relay) or (view_mode == "100 Miler" and not is_relay):
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_dynamic(row, station_map, view_mode)
+            status, miles, l_time, speed, n_st, n_time, s_val = calculate_metrics_dynamic(row, station_map, view_mode)
             results.append({
-                "Pos": "", "Name": row.iloc[0], "Bib": bib,
-                "Last Station": status, "Miles": miles, "Next": expected, 
-                "Loop": loop, "sort_val": sort_val
+                "Pos": 0, "Name": name, "Bib": bib,
+                "Last Seen": status, "Miles": miles, "MPH": speed,
+                "Next Station": n_st, "Expected": n_time, "sort_val": s_val
             })
 
     if results:
+        # Sort by Distance (s_val) descending, then Bib ascending
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         final_df['Pos'] = range(1, len(final_df) + 1)
+        
         st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
+        
+        st.markdown(f"""
+            <div class='disclaimer'>
+                <b>Disclaimer:</b> Predictions are based on average pace since the 6:00 AM start. 
+                Actual arrival times may vary based on terrain and runner fatigue.<br>
+                Last Sync: {now.strftime('%H:%M:%S')} EDT
+            </div>
+        """, unsafe_allow_html=True)
 
-# 5. UI & Refresh
+# 5. UI Refresh Logic
 if st.button("🔄 Force Clear & Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-# Auto-reload every 20s
 time.sleep(20)
 st.rerun()
