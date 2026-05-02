@@ -68,14 +68,8 @@ def load_raw_data():
     try:
         response = requests.get(url, timeout=10)
         response.encoding = 'utf-8'
-        # Crucial Fix: Skip the first 2 rows to land on the Header row
-        return pd.read_csv(
-            io.StringIO(response.text), 
-            skiprows=2, 
-            header=None, 
-            dtype=str, 
-            na_filter=False
-        )
+        # SKIPROWS=2 ensures we land on Row 3 for our headers
+        return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str, na_filter=False)
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return None
@@ -84,15 +78,14 @@ def process_leaderboard(df_raw, mode, query=""):
     if df_raw is None or df_raw.empty: return pd.DataFrame()
         
     try:
-        # After skipping 2 rows, Index 0 is our actual Header row
+        # Row 3 is now index 0 because we skipped the first two
         headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
         bib_idx = next((i for i, h in enumerate(headers) if "bib" in h), 1)
         name_idx = next((i for i, h in enumerate(headers) if any(x in h for x in ["runner", "team", "name"])), 0)
 
-        # Map Station Names to Columns (e.g. Find "Middle out" for Lap 1, Lap 2, etc)
+        # Map Station Names based on Row 3 labels
         station_map = {}
         last_found_st_idx = -1
-        
         for lap in range(1, 6): 
             for st_name in STATION_NAMES:
                 target = st_name.lower()
@@ -102,7 +95,7 @@ def process_leaderboard(df_raw, mode, query=""):
                         last_found_st_idx = col_idx
                         break
 
-        # Data starts from index 1 (the row after headers)
+        # Runner data starts at index 1 (Row 4)
         df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
