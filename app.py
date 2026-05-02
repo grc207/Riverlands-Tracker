@@ -3,6 +3,7 @@ import pandas as pd
 import datetime
 import requests
 import io
+import time
 
 # 1. Setup & Styling
 st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
@@ -10,7 +11,7 @@ st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
 st.markdown("""
     <style>
     th { text-align: center !important; background-color: #f2f2f2; }
-    td { text-align: center !important; border-bottom: 1px solid #ddd; }
+    td { text-align: center !important; border-bottom: 1px solid #ddd; vertical-align: middle !important; }
     td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 150px;}
     .status-box { line-height: 1.2; font-weight: bold; color: #1e3a8a; }
     .time-sub { font-size: 0.85em; color: #666; font-weight: normal; }
@@ -34,30 +35,24 @@ def calculate_metrics_dynamic(row, station_map, mode):
     
     max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
     
-    # We iterate through the station map to find the furthest point in THIS runner's row
     for lap in range(1, max_loops + 1):
         for i, st_name in enumerate(STATION_NAMES):
             col_idx = station_map.get((lap, st_name.lower()))
             if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                # Check for any valid data in this specific cell for this specific runner
                 if val and val not in ["", "-", "nan", "None", "0"]:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
-                    # This ensures we only update if this is the "latest" check-in
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
 
     if max_miles == 0:
         return "On Course", 0.0, "---", "0.0", STATION_NAMES[0], "---", 0.1
-
     if max_miles >= (max_loops * loop_dist):
         return "<b>FINISHED!</b>", max_miles, last_time, "---", "---", "---", 999
     
-    # Pace Math
     elapsed_hours = (now - START_TIME).total_seconds() / 3600
     speed = max_miles / elapsed_hours if elapsed_hours > 0 else 0
     
-    # Next Station Logic
     curr_idx = STATION_NAMES.index(last_st)
     next_idx = (curr_idx + 1) % 4
     next_st = STATION_NAMES[next_idx]
@@ -78,26 +73,29 @@ def calculate_metrics_dynamic(row, station_map, mode):
     
     return status, max_miles, last_time, f"{speed:.1f}", next_st, expected_str, max_miles
 
-# 3. Data Loader (Manual Buster)
+# 3. Data Loader
 @st.cache_data(ttl=0)
 def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
-        response = requests.get(url, timeout=10)
-        # Skip 2 to land on Row 3 for headers
+        # Increased timeout for spotty connections
+        response = requests.get(url, timeout=15)
         return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str)
-    except:
-        st.error("Connection Timeout. Please try refreshing again.")
+    except Exception as e:
+        st.error(f"Data Fetch Error: {e}")
         return None
 
 # 4. Processing
-# No auto-refresh logic here. Page only updates on load or button click.
-df_raw = load_raw_data(st.session_state.get('buster', int(time.time())))
+# Initialize buster if not present
+if 'buster' not in st.session_state:
+    st.session_state['buster'] = int(time.time())
+
+df_raw = load_raw_data(st.session_state['buster'])
 
 if df_raw is not None:
     headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
     
-    # Create the column map from Row 3 (the header row)
+    # Station Mapping Logic
     station_map = {}
     last_found = -1
     for lap in range(1, 6):
@@ -116,29 +114,31 @@ if df_raw is not None:
     with col_a:
         view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
     with col_b:
-        if st.button("🔄 Refresh Data Now"):
+        if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
             st.session_state['buster'] = int(time.time())
             st.rerun()
 
     results = []
     for _, row in df_runners.iterrows():
-        name = str(row.iloc[0]).strip()
-        bib_str = str(row.iloc[1]).strip() if len(row) > 1 else ""
-        
-        if not bib_str.isdigit() or not name: continue
-        
-        bib = int(bib_str)
-        is_relay = 400 <= bib < 500
-        
-        if (view_mode == "Relay" and is_relay) or (view_mode == "100 Miler" and not is_relay):
-            # This function now takes the specific row and the header map
-            status, miles, l_time, speed, n_st, n_time, s_val = calculate_metrics_dynamic(row, station_map, view_mode)
-            results.append({
-                "Pos": 0, "Name": name, "Bib": bib,
-                "Last Seen": status, "Miles": miles, "MPH": speed,
-                "Next Station": n_st, "Expected": n_time, "sort_val": s_val
-            })
+        try:
+            name = str(row.iloc[0]).strip()
+            bib_str = str(row.iloc[1]).strip() if len(row) > 1 else ""
+            
+            if not bib_str.isdigit() or not name: continue
+            
+            bib = int(bib_str)
+            is_relay = 400 <= bib < 500
+            
+            if (view_mode == "Relay" and is_relay) or (view_mode == "100 Miler" and not is_relay):
+                status, miles, l_time, speed, n_st, n_time, s_val = calculate_metrics_dynamic(row, station_map, view_mode)
+                results.append({
+                    "Pos": 0, "Name": name, "Bib": bib,
+                    "Last Seen": status, "Miles": miles, "MPH": speed,
+                    "Next Station": n_st, "Expected": n_time, "sort_val": s_val
+                })
+        except:
+            continue # Skip individual row if it's broken
 
     if results:
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
@@ -147,7 +147,9 @@ if df_raw is not None:
         
         st.markdown(f"""
             <div class='disclaimer'>
-                <b>Last Refresh:</b> {now.strftime('%H:%M:%S')} EDT<br>
+                <b>Data Current as of:</b> {now.strftime('%H:%M:%S')} EDT<br>
                 Predictions are pace-based estimates.
             </div>
         """, unsafe_allow_html=True)
+    else:
+        st.info("Waiting for data to populate for this category...")
