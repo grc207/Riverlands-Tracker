@@ -70,8 +70,10 @@ def get_status(row, mode, global_has_data):
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        df = pd.read_csv(url)
-        # 1. Find the Bib column index
+        # Load raw data as objects (strings) to prevent auto-conversion to int64
+        df = pd.read_csv(url, dtype=object)
+        
+        # 1. Identify Bib column position
         bib_idx = None
         for i, col in enumerate(df.columns):
             if "Bib" in str(col):
@@ -80,33 +82,49 @@ def load_data(mode, query=""):
         
         if bib_idx is None: return pd.DataFrame()
 
-        # 2. Identify Names as the column exactly one to the left of Bib
+        # 2. Identify Names as the column one cell to the left of Bib
         name_col = df.columns[bib_idx - 1]
         bib_col = df.columns[bib_idx]
 
-        # 3. Filter rows that have an actual numeric Bib
-        df['Bib_Numeric'] = pd.to_numeric(df[bib_col], errors='coerce')
-        df = df.dropna(subset=['Bib_Numeric'])
+        # 3. Clean Bib column - Keep as string but filter for numeric contents
+        def is_relay_bib(val):
+            try:
+                v = int(float(str(val).strip()))
+                return 400 <= v < 500
+            except: return False
 
-        # 4. Separate Relay (400s) from 100 Milers
-        is_relay = (df['Bib_Numeric'] >= 400) & (df['Bib_Numeric'] < 500)
-        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
+        def is_100_bib(val):
+            try:
+                v = int(float(str(val).strip()))
+                return v < 400 or v >= 500
+            except: return False
 
-        # 5. Filter by search query
+        if mode == "Relay":
+            active_df = df[df[bib_col].apply(is_relay_bib)].copy()
+        else:
+            active_df = df[df[bib_col].apply(is_100_bib)].copy()
+
+        # 4. Search Filter
         if query:
-            active_df = active_df[active_df[name_col].astype(str).str.contains(query, case=False) | 
-                                  active_df[bib_col].astype(str).str.contains(query)]
+            active_df = active_df[
+                active_df[name_col].astype(str).str.contains(query, case=False, na=False) | 
+                active_df[bib_col].astype(str).str.contains(query, na=False)
+            ]
 
-        # Check for live check-in data (":")
+        # 5. Check for live timing data
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
 
         results = []
         for _, row in active_df.iterrows():
             status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
+            
+            # Format Bib cleanly (remove .0 if it exists)
+            clean_bib = str(row[bib_col]).split('.')[0]
+
             results.append({
                 "Pos": 0, 
                 "Team/Runner": str(row[name_col]), 
-                "Bib": str(int(row['Bib_Numeric'])), 
+                "Bib": clean_bib, 
                 "Status": status, 
                 "Total Miles": miles, 
                 "Race Time": r_time, 
