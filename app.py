@@ -19,10 +19,9 @@ st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate and should NOT be accepted as official!")
 
-# 3. MANUAL Timezone Logic (UTC to EDT)
+# 3. Timezone Logic
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) 
-
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 DNS_CUTOFF = datetime.datetime(2026, 5, 2, 7, 30, 0)
 RACE_LIMIT_HOURS = 32
@@ -134,32 +133,32 @@ def load_data(mode, query=""):
         df = pd.read_csv(full_url)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # SMART COLUMN DETECTION
-        name_col = next((c for c in df.columns if any(x in c for x in ["Runner", "Team"])), None)
-        bib_col = next((c for c in df.columns if "Bib" in c), None)
-
-        if not name_col or not bib_col:
-            st.error(f"Syncing Error: Missing critical columns. Found: {list(df.columns)}")
+        # --- FIXED COLUMN DETECTION ---
+        # Find Bib column index
+        bib_idx = next((i for i, c in enumerate(df.columns) if "Bib" in c), None)
+        
+        if bib_idx is None:
+            st.error("Could not find a 'Bib' column.")
             return pd.DataFrame()
+
+        # The name is exactly one to the left of Bib
+        bib_col = df.columns[bib_idx]
+        name_col = df.columns[bib_idx - 1]
+        # ------------------------------
             
-        # Clean Bib data for classification
+        # Clean Bib data
         df[bib_col] = pd.to_numeric(df[bib_col], errors='coerce')
         
-        # CLASSIFICATION BY BIB (Relay = 400-499, others = 100 Miler)
+        # Classification (Relay = 400-499)
         is_relay_bib = (df[bib_col] >= 400) & (df[bib_col] < 500)
-        
-        if mode == "Relay":
-            active_df = df[is_relay_bib].copy()
-        else:
-            active_df = df[~is_relay_bib].copy()
+        active_df = df[is_relay_bib].copy() if mode == "Relay" else df[~is_relay_bib].copy()
             
-        # Filter out empty rows
+        # Filter empty rows
         active_df = active_df[active_df[name_col].notna() & (active_df[name_col].astype(str).str.strip() != "")]
         
         # Format Bib for display
         active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
 
-        # Search Logic (100 Miler only)
         if mode == "100 Miler" and query:
             query = query.strip().lower()
             active_df = active_df[
