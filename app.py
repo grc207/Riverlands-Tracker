@@ -42,88 +42,76 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
-    # Position logic: 4 stations + 1 spacer/repeated bib = block of 5
+    # Position logic based on IMG_4604.jpeg: 4 stations + 1 spacer/repeated bib = block of 5
     for lap in range(1, max_loops + 1):
+        # We jump 5 columns for every lap block
         start_search = (bib_idx + 1) + ((lap - 1) * 5)
         for i in range(4):
             col_idx = start_search + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
+                # If cell contains a colon, we treat it as valid time data
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, STATIONS[i], val, lap
 
+    # Status formatting
     if max_miles == 0: 
         return "On Course", 0.0, "---", 0.0, STATIONS[0], 1, 0.1
     if max_miles >= (max_loops * loop_dist): 
         return "<b>FINISHED!</b>", max_miles, "---", 0.0, "---", max_loops, 999
 
+    # Speed calculation based on time since race start
     speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
     next_st = STATIONS[(STATIONS.index(last_st) + 1) % 4]
     return f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>", max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading - Strict Positional Version
+# 4. Data Loading - Surgical Search
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
+    # Force fresh data by appending a timestamp to URL
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     
     try:
-        # Load raw without headers first to avoid naming collisions
-        raw_df = pd.read_csv(url, header=None, dtype=str).fillna("")
+        # Step 1: Read skipping the first 2 rows (merged cells like "Lap 1")
+        df = pd.read_csv(url, skiprows=2, dtype=str).fillna("")
+        df.columns = [str(c).strip() for c in df.columns]
         
-        # Step 1: Find Header Row
-        header_idx = 0
-        for i, row in raw_df.iterrows():
-            if any("bib" in str(cell).lower() for cell in row):
-                header_idx = i
-                break
-        
-        # Step 2: Identify Key Column Indices
-        headers = [str(c).strip().lower() for c in raw_df.iloc[header_idx]]
-        
-        # Find first Bib column index
+        # Step 2: Find the FIRST Bib column (the anchor)
         bib_idx = -1
-        for i, h in enumerate(headers):
-            if "bib" in h:
+        for i, col in enumerate(df.columns):
+            if "bib" in col.lower():
                 bib_idx = i
                 break
         
-        # Find Name/Team column index (look left of Bib)
+        # Step 3: Find the Name column to the LEFT of the Bib
         name_idx = -1
+        # Scan specifically for headers containing 'name', 'team', or 'runner'
         for i in range(bib_idx - 1, -1, -1):
-            if any(word in headers[i] for word in ["name", "team", "runner"]):
+            if any(word in df.columns[i].lower() for word in ["name", "team", "runner"]):
                 name_idx = i
                 break
         if name_idx == -1: name_idx = max(0, bib_idx - 1)
 
         if bib_idx == -1:
-            st.error("Could not find Bib column.")
+            st.error("Bib column not found. Check spreadsheet headers.")
             return pd.DataFrame()
 
-        # Step 3: Process Data Rows
-        data_rows = raw_df.iloc[header_idx+1:].copy()
+        # Step 4: Strict Numeric Conversion
+        # Targeting the series directly via iloc to avoid duplicate header errors (IMG_4606.jpeg)
+        df['_bib_clean'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
+        df = df.dropna(subset=['_bib_clean'])
         
-        # STRICTOR NUMERIC CONVERSION: Avoids "arg must be a list"
-        # Use iloc to target the specific column index directly
-        bib_series = pd.to_numeric(data_rows.iloc[:, bib_idx], errors='coerce')
-        data_rows['_bib_clean'] = bib_series
-        
-        # Drop rows with no valid Bib
-        df = data_rows.dropna(subset=['_bib_clean']).copy()
-        
-        # Step 4: Category Filtering
+        # Step 5: Category Filtering (Relay = 400 range)
         is_relay = (df['_bib_clean'] >= 400) & (df['_bib_clean'] < 500)
-        active_df = df[is_relay] if mode == "Relay" else df[~is_relay]
+        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
         
-        # Search Filter
         if query:
             active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
             
-        # Step 5: Metric Calculation
         results = []
         for _, row in active_df.iterrows():
-            # Use positional logic for station times
             status, miles, elapsed, speed, expected, lap, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
                 "Pos": "", 
@@ -135,6 +123,7 @@ def load_data(mode, query=""):
             
         if not results: return pd.DataFrame()
 
+        # Sort by total miles covered, then bib number
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         moving = final_df['sort_val'] > 0.1
         if moving.any(): final_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
@@ -152,19 +141,19 @@ if now > START_TIME:
     st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search = st.text_input("🔍 Search Name:")
+search_query = st.text_input("🔍 Search Name:")
 
 if st.button("🔄 Force Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-data = load_data(view_mode, search)
+data = load_data(view_mode, search_query)
 
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
     st.info("Loading live data from source...")
 
-# Auto-refresh logic
+# Auto-refresh rerun
 time.sleep(20)
 st.rerun()
