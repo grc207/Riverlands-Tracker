@@ -38,7 +38,6 @@ def calculate_metrics_dynamic(row, station_map, mode):
     m_list = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
-    
     max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
     
     for lap in range(1, max_loops + 1):
@@ -61,14 +60,14 @@ def calculate_metrics_dynamic(row, station_map, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loader
-@st.cache_data(ttl=10)
+# 4. LIVE Data Loader (No Cache)
+@st.cache_data(ttl=0) # TTL=0 ensures we never store stale data
 def load_raw_data():
+    # Cache-busting URL parameter forces a fresh fetch from Google
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
         response = requests.get(url, timeout=10)
         response.encoding = 'utf-8'
-        # SKIPROWS=2 ensures we land on Row 3 for our headers
         return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str, na_filter=False)
     except Exception as e:
         st.error(f"Sync Error: {e}")
@@ -76,14 +75,11 @@ def load_raw_data():
 
 def process_leaderboard(df_raw, mode, query=""):
     if df_raw is None or df_raw.empty: return pd.DataFrame()
-        
     try:
-        # Row 3 is now index 0 because we skipped the first two
         headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
         bib_idx = next((i for i, h in enumerate(headers) if "bib" in h), 1)
         name_idx = next((i for i, h in enumerate(headers) if any(x in h for x in ["runner", "team", "name"])), 0)
 
-        # Map Station Names based on Row 3 labels
         station_map = {}
         last_found_st_idx = -1
         for lap in range(1, 6): 
@@ -95,7 +91,6 @@ def process_leaderboard(df_raw, mode, query=""):
                         last_found_st_idx = col_idx
                         break
 
-        # Runner data starts at index 1 (Row 4)
         df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
@@ -144,8 +139,9 @@ if not leaderboard_df.empty:
 else:
     st.info("Waiting for race data...")
 
-if st.button("🔄 Refresh"):
-    st.cache_data.clear()
+# 6. Debug & Force Clear
+if st.button("🔄 Force Refresh & Wipe Cache"):
+    st.cache_data.clear() # Explicitly wipes all stored data
     st.rerun()
 
 time.sleep(15)
