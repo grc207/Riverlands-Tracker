@@ -27,7 +27,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Positional Data Processing
+# 3. Positional Logic: Reading Left-to-Right from Bib
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -40,14 +40,17 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
+    # logic: Start at Bib index and scan rightward
     for lap in range(1, max_loops + 1):
-        # Anchor: find the first Bib column, then step through lap blocks
+        # Calculate the starting column for this specific lap block
+        # (Assuming 4 timing stations + 1 gap column per lap)
         start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
         
         for i in range(4):
             col_idx = start_search_idx + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
+                # If cell has a colon, it's a time. Update to the furthest right time found.
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
@@ -65,90 +68,19 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading - Total Reset Version
+# 4. Safe Data Loading
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
-    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
+    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        # We use engine='python' and dtype=object to stop the C-engine from crashing
-        # on mixed data types or hidden characters.
-        df_raw = pd.read_csv(
-            url, 
-            skiprows=2, 
-            header=None, 
-            engine='python', 
-            dtype=object, 
-            na_filter=False
-        )
+        # Load everything as 'object' (raw text) to prevent the error in IMG_4608.jpeg
+        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=object).fillna("")
         
-        # Ensure everything is a string and strip whitespace
-        df_raw = df_raw.astype(str).apply(lambda x: x.str.strip())
-        
-        # Identify Bib and Name indices
-        headers = df_raw.iloc[0].tolist()
-        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), 1)
-        name_idx = next((i for i, h in enumerate(headers) if "team" in h.lower() or "runner" in h.lower()), 0)
+        # Identify Bib and Name indices from the first row of visible data
+        header_row = df_raw.iloc[0].astype(str).tolist()
+        bib_idx = next((i for i, h in enumerate(header_row) if "bib" in h.lower()), 1)
+        name_idx = next((i for i, h in enumerate(header_row) if "runner" in h.lower() or "team" in h.lower()), 0)
 
         # Process data rows
         df = df_raw.iloc[1:].copy()
-        
-        # Force conversion of Bib for filtering logic
-        df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
-        df = df.dropna(subset=['_bib_num'])
-        
-        is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
-        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
-        
-        if query:
-            active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
-            
-        results = []
-        for _, row in active_df.iterrows():
-            # Now we look at the row columns for station data
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
-            results.append({
-                "Pos": "", 
-                "Team/Runner": row.iloc[name_idx], 
-                "Bib": str(int(row['_bib_num'])),
-                "Status": status, 
-                "Miles": miles, 
-                "Speed": f"{speed} mph", 
-                "Next": expected, 
-                "Loop": loop, 
-                "sort_val": sort_val
-            })
-            
-        if not results: return pd.DataFrame()
-        
-        full_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
-        moving = full_df['sort_val'] > 0.1
-        if moving.any():
-            full_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
-            
-        return full_df.drop(columns=['sort_val'])
-    except Exception as e:
-        # This will catch and display the exact text of the error if it still fails
-        st.error(f"Sync Error: {e}")
-        return pd.DataFrame()
-        
-# 5. UI
-st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
-if now > START_TIME:
-    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
-
-view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search_input = st.text_input("🔍 Search Name:")
-
-if st.button("🔄 Refresh Data"):
-    st.cache_data.clear()
-    st.rerun()
-
-data = load_data(view_mode, search_input)
-
-if not data.empty:
-    st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
-else:
-    st.info("Loading live data...")
-
-time.sleep(15)
-st.rerun()
+        dfI encountered an error doing what you asked. Could you try again?
