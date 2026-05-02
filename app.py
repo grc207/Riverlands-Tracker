@@ -138,27 +138,33 @@ def load_data(mode, query=""):
         name_col = next((c for c in df.columns if any(x in c for x in ["Runner", "Team"])), None)
         bib_col = next((c for c in df.columns if "Bib" in c), None)
 
-        if not name_col:
-            st.error(f"Syncing Error: Could not find Runner/Team column. Found: {list(df.columns)}")
+        if not name_col or not bib_col:
+            st.error(f"Syncing Error: Missing critical columns. Found: {list(df.columns)}")
             return pd.DataFrame()
             
-        # Split Relay and 100 Miler based on the blank row gap
-        mask = df[name_col].isna() | (df[name_col].astype(str).str.strip() == "")
-        gap_indices = df[mask].index.tolist()
-        gap = gap_indices[0] if gap_indices else len(df)
+        # Clean Bib data for classification
+        df[bib_col] = pd.to_numeric(df[bib_col], errors='coerce')
         
-        active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
+        # CLASSIFICATION BY BIB (Relay = 400-499, others = 100 Miler)
+        is_relay_bib = (df[bib_col] >= 400) & (df[bib_col] < 500)
+        
+        if mode == "Relay":
+            active_df = df[is_relay_bib].copy()
+        else:
+            active_df = df[~is_relay_bib].copy()
+            
+        # Filter out empty rows
         active_df = active_df[active_df[name_col].notna() & (active_df[name_col].astype(str).str.strip() != "")]
         
-        if bib_col:
-            active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
+        # Format Bib for display
+        active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
 
         # Search Logic (100 Miler only)
         if mode == "100 Miler" and query:
             query = query.strip().lower()
             active_df = active_df[
                 active_df[name_col].astype(str).str.lower().str.contains(query, na=False) | 
-                (active_df[bib_col].astype(str).str.lower().str.contains(query, na=False) if bib_col else False)
+                active_df[bib_col].astype(str).str.lower().str.contains(query, na=False)
             ]
         
         station_cols = [c for c in active_df.columns if any(s in c for s in ["Middle", "Conant", "Arrive", "Start/Finish"])]
@@ -170,7 +176,7 @@ def load_data(mode, query=""):
             is_inactive = any(x in status for x in ["DNF", "DNS", "Race starts", "Race Started"])
             speed_val = "---" if (is_inactive or t_sec == 999999 or miles == 0) else f"{(miles / (t_sec / 3600)):.2f} mph"
             results.append({
-                "Pos": 0, "Team/Runner": row[name_col], "Bib": row[bib_col] if bib_col else "---",
+                "Pos": 0, "Team/Runner": row[name_col], "Bib": row[bib_col],
                 "Status": status, "Total Miles": miles, "Race Time": "---" if is_inactive else t_disp,
                 "Avg Speed": speed_val, "Expected": expected, "SortSeconds": t_sec, "Lap": lap if "Race" not in status else ""
             })
