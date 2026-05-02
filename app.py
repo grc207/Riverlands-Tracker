@@ -27,7 +27,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Positional Data Processing Logic
+# 3. Positional Data Processing
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -40,16 +40,15 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
-    # Read every cell to the right of the Bib column
+    # Reads every cell to the right of Bib
     for lap in range(1, max_loops + 1):
-        # Calculation assumes 5 columns per lap block (4 stations + 1 spacer)
+        # Calculation: 1 column after Bib + (5 columns per lap block)
         start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
         
         for i in range(4):
             col_idx = start_search_idx + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                # Identify a time value by the presence of a colon
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
@@ -67,19 +66,25 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Hardened Data Loading Block
+# 4. Data Loading - Total Bypass Mode
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
-    # Using a timestamp t in the URL to bypass any stale Google cache
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # Crucial Fix: dtype=object and low_memory=False prevents the IMG_4610.jpeg error
-        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=object, low_memory=False).fillna("")
+        # engine='python' and na_filter=False prevents the crash in IMG_4610_2.jpeg
+        df_raw = pd.read_csv(
+            url, 
+            skiprows=2, 
+            header=None, 
+            engine='python', 
+            dtype=str, 
+            na_filter=False
+        )
         
-        # Identify indices for Name and Bib dynamically from the first row of data
-        headers = df_raw.iloc[0].astype(str).tolist()
-        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), 1)
-        name_idx = next((i for i, h in enumerate(headers) if "runner" in h.lower() or "team" in h.lower()), 0)
+        # Identify Bib and Name indices
+        headers = df_raw.iloc[0].tolist()
+        bib_idx = next((i for i, h in enumerate(headers) if h and "bib" in str(h).lower()), 1)
+        name_idx = next((i for i, h in enumerate(headers) if h and ("team" in str(h).lower() or "runner" in str(h).lower())), 0)
 
         df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
@@ -89,7 +94,7 @@ def load_data(mode, query=""):
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
         
         if query:
-            active_df = active_df[active_df.iloc[:, name_idx].astype(str).str.contains(query, case=False)]
+            active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
             
         results = []
         for _, row in active_df.iterrows():
@@ -109,13 +114,11 @@ def load_data(mode, query=""):
             
         return full_df.drop(columns=['sort_val'])
     except Exception as e:
-        # Captures the specific error text if the loader still fails
         st.error(f"Sync Error: {e}")
         return pd.DataFrame()
 
-# 5. User Interface
+# 5. UI
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
-
 if now > START_TIME:
     st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
@@ -131,8 +134,7 @@ data = load_data(view_mode, search_input)
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("Waiting for race data...")
+    st.info("Loading live data...")
 
-# Auto-refresh every 15 seconds
 time.sleep(15)
 st.rerun()
