@@ -70,10 +70,12 @@ def calculate_metrics_positional(row, bib_idx, mode):
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # Load without dtype='str' to avoid the error in IMG_4608
-        df_raw = pd.read_csv(url, skiprows=2, header=None).fillna("")
-        # Convert everything to string manually and safely
-        df_raw = df_raw.astype(str)
+        # We load the data as-is first, with NO type enforcement
+        df_raw = pd.read_csv(url, skiprows=2, header=None)
+        
+        # This is the critical fix for the IMG_4608.jpeg error:
+        # We manually fill empty cells and force EVERYTHING to a string ourselves.
+        df_raw = df_raw.fillna("").astype(str)
         
         # Identify Bib and Name indices
         headers = df_raw.iloc[0].tolist()
@@ -82,6 +84,8 @@ def load_data(mode, query=""):
 
         # Process data rows
         df = df_raw.iloc[1:].copy()
+        
+        # Convert Bib to numeric only for the sake of filtering Relay vs 100
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -93,6 +97,7 @@ def load_data(mode, query=""):
             
         results = []
         for _, row in active_df.iterrows():
+            # This logic now works because every 'row' is guaranteed to be text/strings
             status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
                 "Pos": "", "Team/Runner": row.iloc[name_idx], "Bib": str(int(row['_bib_num'])),
@@ -111,7 +116,6 @@ def load_data(mode, query=""):
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return pd.DataFrame()
-
 # 5. UI
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 if now > START_TIME:
