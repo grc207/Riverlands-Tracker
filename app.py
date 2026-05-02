@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import time
 
-# 1. Setup & Logo
+# 1. Setup
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
 
 col1, col2, col3 = st.columns([1, 2, 1])
@@ -15,7 +15,7 @@ with col2:
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# 2. Time Logic
+# 2. Race Time Logic
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) 
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
@@ -27,7 +27,7 @@ if now < START_TIME:
 else:
     st.write("**Race in Progress**")
 
-# 3. Processing Logic
+# 3. Data Processing
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
@@ -58,27 +58,16 @@ def load_data(mode, query=""):
         df = pd.read_csv(url, dtype=str).fillna("")
         df.columns = [str(c).strip() for c in df.columns]
         
-        # 1. Find Bib column
-        bib_idx = next((i for i, c in enumerate(df.columns) if "Bib" in c), None)
-        if bib_idx is None: return pd.DataFrame()
-        bib_col = df.columns[bib_idx]
+        # EXACT MATCH SEARCH based on your provided image
+        name_col = next((c for c in df.columns if "Team/Runner" in c), None)
+        bib_col = next((c for c in df.columns if "Bib" in c), None)
 
-        # 2. SMART SEARCH: Look left from Bib for the actual name column
-        # It skips columns that only contain numbers (like 0 or -10)
-        name_col = None
-        for i in range(bib_idx - 1, -1, -1):
-            potential_col = df.columns[i]
-            # Sample a few rows to see if they look like names
-            sample_values = df[potential_col].head(20).astype(str).tolist()
-            is_numeric_col = all(v.replace('-','').replace('.','').isdigit() or v == "" for v in sample_values)
-            
-            if not is_numeric_col and "Ranking" not in potential_col:
-                name_col = potential_col
-                break
-        
-        if not name_col: name_col = df.columns[bib_idx - 2] # Fallback
+        if not name_col or not bib_col:
+            # Fallback in case "Team/Runner" is slightly different in the CSV raw data
+            name_col = next((c for c in df.columns if "Runner" in c), df.columns[0])
+            bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
 
-        # 3. Filter
+        # Filter and Process
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -106,18 +95,21 @@ def load_data(mode, query=""):
         if not results: return pd.DataFrame()
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
         
+        # Assign position ranks
         mask = (full_df['Total Miles'] > 0)
         if mask.any():
             full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
         
-        full_df['Pos'] = full_df['Pos'].astype(str).replace('nan', '')
+        # Clean up column for Streamlit
+        full_df['Pos'] = full_df['Pos'].astype(str).replace(['nan', 'None'], '')
+        
         return full_df.drop(columns=['Sort'])
         
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Syncing Error: {e}")
         return pd.DataFrame()
 
-# 4. UI Rendering
+# 4. UI
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:") if view_mode == "100 Miler" else ""
 
