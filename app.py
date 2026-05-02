@@ -28,19 +28,18 @@ STATION_NAMES = ["Middle Out", "Conant Rd", "Middle Back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-# DIRECT MAPPING based on your specific column layout
+# Mapping strictly to your coordinates
 STATION_MAP = {
     (1, 0): 6,  (1, 1): 7,  (1, 2): 8,  (1, 3): 11,
     (2, 0): 12, (2, 1): 13, (2, 2): 14, (2, 3): 17,
     (3, 0): 18, (3, 1): 19, (3, 2): 20, (3, 3): 23,
     (4, 0): 24, (4, 1): 25, (4, 2): 26, (4, 3): 29,
-    (5, 0): 30, (5, 1): 31, (5, 2): 32, (5, 3): 35  # Pattern for Relay Lap 5
+    (5, 0): 30, (5, 1): 31, (5, 2): 32, (5, 3): 35
 }
 
 def is_valid_time(val):
     val_str = str(val).strip().lower()
-    if not val_str or val_str in ["nan", "0", "-", "none", ""]: return False
-    # Look for any digit to confirm a timestamp or data entry
+    if not val_str or val_str in ["nan", "0", "-", "none", "", "finish"]: return False
     return bool(re.search(r'\d', val_str))
 
 def calculate_metrics(row, mode):
@@ -48,23 +47,18 @@ def calculate_metrics(row, mode):
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
-    max_miles, last_st, last_time, current_lap = 0.0, "Start", "6:00 AM", 1
+    max_miles, last_st, last_time, current_lap = 0.0, "Start", "---", 1
     
-    # Sequential Loop Check: Runner must have data in the current lap to be considered
+    # SCAN ALL: Find the absolute furthest data point available
     for lap in range(1, max_loops + 1):
-        found_in_lap = False
         for i in range(4):
             col_idx = STATION_MAP.get((lap, i))
             if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
                 if is_valid_time(val):
                     dist = ((lap - 1) * loop_dist) + m_list[i]
-                    max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
-                    found_in_lap = True
-        
-        # If no data found for this entire lap, stop checking future laps
-        if not found_in_lap:
-            break
+                    if dist >= max_miles:
+                        max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
 
     if max_miles == 0:
         return "On Course", 0.0, STATION_NAMES[0], "---", 0.1
@@ -72,12 +66,10 @@ def calculate_metrics(row, mode):
     elapsed = (now - START_TIME).total_seconds() / 3600
     speed = max_miles / elapsed if elapsed > 0 else 0
     
-    # Next station prediction
     curr_idx = STATION_NAMES.index(last_st)
     next_idx = (curr_idx + 1) % 4
     next_st = STATION_NAMES[next_idx]
     l_idx = current_lap + 1 if (next_idx == 0 and curr_idx == 3) else current_lap
-    
     next_dist = ((l_idx - 1) * loop_dist) + m_list[next_idx]
     
     expected = "---"
@@ -97,7 +89,6 @@ def load_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
         res = requests.get(url, timeout=10)
-        # Load raw to maintain exact column alignment
         return pd.read_csv(io.StringIO(res.text), header=None, dtype=str)
     except: return None
 
@@ -108,7 +99,7 @@ if 'buster' not in st.session_state:
 raw_df = load_data(st.session_state['buster'])
 
 if raw_df is not None:
-    st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live</h1>", unsafe_allow_html=True)
+    st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Tracker</h1>", unsafe_allow_html=True)
     
     col_a, col_b = st.columns([3, 1])
     with col_a:
@@ -120,15 +111,15 @@ if raw_df is not None:
             st.rerun()
 
     results = []
-    # Starting at Row 3 to bypass title/header noise
-    for i in range(3, len(raw_df)):
+    # Loop starts at 3, but let's be safe and check if the name is actually a string
+    for i in range(len(raw_df)):
         row = raw_df.iloc[i]
         try:
             name = str(row.iloc[0]).strip()
             bib_str = str(row.iloc[1]).strip()
             
-            # Skip empty rows or rows without a proper Bib
-            if not bib_str.isdigit() or not name or name.lower() == "nan": 
+            # Skip header rows and empty rows
+            if not bib_str.isdigit() or len(name) < 2: 
                 continue
             
             bib = int(bib_str)
@@ -149,4 +140,4 @@ if raw_df is not None:
         final_df['Pos'] = range(1, len(final_df) + 1)
         st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
     else:
-        st.info("No data found. Ensure the Google Sheet is published and runners have Bibs/Names.")
+        st.warning("No runners found. Check if the spreadsheet is published.")
