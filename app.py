@@ -11,7 +11,7 @@ with col2:
     try:
         st.image("logo.jpg", use_container_width=True)
     except:
-        st.write("*(Logo Placeholder: logo.jpg)*")
+        st.write("*(Logo: logo.jpg)*")
 
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
@@ -55,28 +55,20 @@ def get_status(row, mode, has_data):
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
+        # Load everything as strings to prevent the int64 crash
         df = pd.read_csv(url, dtype=str).fillna("")
         df.columns = [str(c).strip() for c in df.columns]
         
-        # 1. Locate Bib Column
+        # 1. Identify Bib column
         bib_idx = next((i for i, c in enumerate(df.columns) if "Bib" in c), None)
         if bib_idx is None: return pd.DataFrame()
         bib_col = df.columns[bib_idx]
 
-        # 2. Robust Name Finder: Scan left from Bib to find the first non-numeric column
-        # that isn't named "Ranking" or empty.
-        name_col = None
-        for i in range(bib_idx - 1, -1, -1):
-            col_to_check = df.columns[i]
-            sample_val = str(df[col_to_check].iloc[5]).strip() # Check a row that likely has a name
-            if "Ranking" not in col_to_check and not sample_val.isdigit() and len(sample_val) > 1:
-                name_col = col_to_check
-                break
-        
-        # Fallback if the loop fails
-        if not name_col: name_col = df.columns[bib_idx - 2] if bib_idx >= 2 else df.columns[0]
+        # 2. IDENTIFIED FIX: Based on image_125eb4, -10 is in the 'Ranking' column.
+        # We must jump 2 columns back to find the actual names.
+        name_col = df.columns[bib_idx - 2] if bib_idx >= 2 else df.columns[0]
 
-        # 3. Filter and Process
+        # 3. Filter by Bib range
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -104,10 +96,13 @@ def load_data(mode, query=""):
         if not results: return pd.DataFrame()
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
         
-        # Rank only active participants
+        # Rank only those who have mileage
         mask = (full_df['Total Miles'] > 0)
         if mask.any():
             full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+        
+        # Ensure Pos is treated as string to avoid future int64 errors
+        full_df['Pos'] = full_df['Pos'].astype(str).replace('nan', '')
         
         return full_df.drop(columns=['Sort'])
         
@@ -115,7 +110,7 @@ def load_data(mode, query=""):
         st.error(f"Syncing Error: {e}")
         return pd.DataFrame()
 
-# 4. UI
+# 4. UI Rendering
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:") if view_mode == "100 Miler" else ""
 
@@ -128,9 +123,9 @@ data = load_data(view_mode, search)
 if not data.empty:
     st.markdown("""<style>
         table { width: 100%; border-collapse: collapse; }
-        th { background-color: #f2f2f2; padding: 10px; border: 1px solid #ddd; text-align: center !important; }
+        th { background-color: #f2f2f2; padding: 10px; border: 1px solid #ddd; }
         td { padding: 10px; border: 1px solid #ddd; text-align: center !important; }
-        td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 200px; }
+        td:nth-child(2) { text-align: left !important; font-weight: bold; }
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
