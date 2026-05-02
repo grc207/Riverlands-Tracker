@@ -16,12 +16,10 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Timing & Clock Logic
+# 2. Timing Logic
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) # UTC to EDT
-
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
-RACE_LIMIT_HOURS = 32
 
 def format_delta_hhh(delta):
     total_seconds = int(delta.total_seconds())
@@ -29,127 +27,120 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Logo and Title
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    try: 
-        st.image("logo.jpg", use_container_width=True)
-    except: 
-        st.markdown("<h2 style='text-align: center;'>RIVERLANDS 100</h2>", unsafe_allow_html=True)
+# 3. Data Processing Logic
+STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
+MILES_100 = [4.5, 13.0, 20.5, 25.0]
+MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
-
-# Display the Clock
-if now < START_TIME:
-    st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
-    st.write("**Hours until Race Day!**")
-else:
-    elapsed_diff = now - START_TIME
-    display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
-    st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-    st.write("**Elapsed Race Time**")
-
-# 4. Data Processing Logic
-STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
-STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
-STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
-
-def calculate_metrics(row, mode):
-    m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
+def calculate_metrics_positional(row, bib_idx, mode):
+    m_list = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
     max_miles = 0.0
-    last_station = ""
-    last_time_str = ""
-    current_loop = 1
+    last_st = ""
+    last_time = ""
+    current_lap = 1
     
-    for col_name, val in row.items():
-        val_str = str(val).strip()
-        # If the cell contains a colon, it's a timestamp
-        if ":" in val_str:
-            # Pandas renames duplicate headers to "Header", "Header.1", "Header.2"
-            parts = col_name.split('.')
-            base_station = parts[0].strip()
-            
-            if base_station in m_map:
-                # Calculate lap: if no suffix, Lap 1. If suffix ".1", Lap 2, etc.
-                lap = 1
-                if len(parts) > 1 and parts[1].isdigit():
-                    # For Riverlands sheet: .1, .2, .3 are stations within Lap 1 usually, 
-                    # but positional indexing is safer. 
-                    # Logic: use the column index to determine lap if possible
-                    # Fallback: check suffix.
-                    lap = int(parts[1]) + 1 
-                
-                # Riverlands specific: The station name repeats every loop. 
-                # We calculate distance based on the latest station found.
-                dist = ((lap - 1) * loop_dist) + m_map[base_station]
-                
-                if dist >= max_miles:
-                    max_miles = dist
-                    last_station = base_station
-                    last_time_str = val_str
-                    current_loop = lap
+    # SCANNING POSITIONS: 
+    # Start looking 1 column to the right of the first Bib column
+    # Each 'lap block' is 5 columns (4 stations + 1 spacer/bib)
+    for lap in range(1, max_loops + 1):
+        start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
+        
+        for i in range(4): # Check the 4 station slots in this lap block
+            col_idx = start_search_idx + i
+            if col_idx < len(row):
+                val = str(row.iloc[col_idx]).strip()
+                if ":" in val: # If it has a colon, it's a time
+                    dist = ((lap - 1) * loop_dist) + m_list[i]
+                    if dist >= max_miles:
+                        max_miles = dist
+                        last_st = STATION_NAMES[i]
+                        last_time = val
+                        current_lap = lap
 
     if max_miles == 0:
-        return "On Course", 0.0, "---", "0.0", "Middle out", 1, 0.1
-
-    if max_miles >= (max_loops * loop_dist):
-        return "<b>FINISHED!</b>", max_miles, "---", "---", "---", max_loops, 999
-
-    hours_elapsed = (now - START_TIME).total_seconds() / 3600
-    speed_mph = round(max_miles / hours_elapsed, 1) if hours_elapsed > 0 else 0.0
-
-    next_idx = (STATION_ORDER.index(last_station) + 1) % len(STATION_ORDER)
-    next_st = STATION_ORDER[next_idx]
+        return "On Course", 0.0, "---", 0.0, STATION_NAMES[0], 1, 0.1
     
-    status_html = f"<div class='status-box'>{last_station}<br><span class='time-sub'>{last_time_str}</span></div>"
-    return status_html, max_miles, last_time_str, speed_mph, next_st, current_loop, max_miles
+    if max_miles >= (max_loops * loop_dist):
+        return "<b>FINISHED!</b>", max_miles, "---", 0.0, "---", max_loops, 999
 
+    speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
+    next_idx = (STATION_NAMES.index(last_st) + 1) % 4
+    next_st = STATION_NAMES[next_idx]
+    
+    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
+    return status, max_miles, last_time, speed, next_st, current_lap, max_miles
+
+# 4. Data Loading
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
-    # Add timestamp to URL to bypass Google's cache
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        df = pd.read_csv(url, skiprows=2, dtype=str).fillna("")
-        df.columns = [str(c).strip() for c in df.columns]
+        # Load raw data with no headers first to find the index of "Bib"
+        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=str).fillna("")
         
-        # Keep your original working name/bib logic
-        name_col = next((c for c in df.columns if "Team/Runner" in c), df.columns[0])
-        bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
+        # Determine which column index is the "Bib" column
+        # We look at the first row (which was row 3 of the original sheet)
+        headers = df_raw.iloc[0].tolist()
+        bib_idx = -1
+        name_idx = -1
         
-        df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
+        for i, h in enumerate(headers):
+            if "bib" in str(h).lower():
+                bib_idx = i
+            if "team" in str(h).lower() or "runner" in str(h).lower():
+                name_idx = i
+        
+        if bib_idx == -1: bib_idx = 1 # Fallback to common index
+        if name_idx == -1: name_idx = 0 # Fallback to common index
+
+        # Drop the header row from the data
+        df = df_raw.iloc[1:].copy()
+        
+        # Filter by Bib
+        df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
         is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
         
         if query:
-            active_df = active_df[active_df[name_col].str.contains(query, case=False, na=False)]
+            active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
             
         results = []
         for _, row in active_df.iterrows():
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics(row, mode)
+            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
-                "Pos": "", "Team/Runner": row[name_col], "Bib": str(int(row['_bib_num'])),
-                "Status": status, "Total Miles": miles, "Elapsed Time": elapsed,
-                "Speed": f"{speed} mph", "Expected": expected, "Loop": loop, "sort_val": sort_val
+                "Pos": "", 
+                "Team/Runner": row.iloc[name_idx], 
+                "Bib": str(int(row['_bib_num'])),
+                "Status": status, 
+                "Miles": miles, 
+                "Speed": f"{speed} mph", 
+                "Next": expected, 
+                "Loop": loop, 
+                "sort_val": sort_val
             })
             
         if not results: return pd.DataFrame()
         
         full_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
-        moving_mask = full_df['sort_val'] > 0.1
-        if moving_mask.any():
-            full_df.loc[moving_mask, 'Pos'] = range(1, moving_mask.sum() + 1)
+        moving = full_df['sort_val'] > 0.1
+        if moving.any():
+            full_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
             
         return full_df.drop(columns=['sort_val'])
     except Exception as e:
-        st.error(f"Data Sync Error: {e}")
+        st.error(f"Sync Error: {e}")
         return pd.DataFrame()
 
-# 5. User Interface
+# 5. UI
+st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
+if now > START_TIME:
+    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
+
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:")
 
@@ -162,8 +153,7 @@ data = load_data(view_mode, search)
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No active participants found in this category.")
+    st.info("Loading live data...")
 
-# Auto-refresh logic
 time.sleep(15)
 st.rerun()
