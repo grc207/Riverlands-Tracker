@@ -19,7 +19,6 @@ st.markdown("""
 # 2. Timing Logic (EDT)
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4)
-
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 
 def format_delta_hhh(delta):
@@ -42,7 +41,7 @@ def calculate_metrics_positional(row, bib_idx, mode):
     last_st, last_time, current_lap = "", "", 1
     
     for lap in range(1, max_loops + 1):
-        # Anchor to first Bib column, jump 5 columns per lap block
+        # Anchor only to the FIRST bib found, jump blocks of 5 (4 stations + 1 spacer)
         start_search = (bib_idx + 1) + ((lap - 1) * 5)
         for i in range(4):
             col_idx = start_search + i
@@ -62,16 +61,15 @@ def calculate_metrics_positional(row, bib_idx, mode):
     next_st = STATIONS[(STATIONS.index(last_st) + 1) % 4]
     return f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>", max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading - Dynamic Header Search
+# 4. Data Loading - Strict First-Instance Search
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     
     try:
-        # Load EVERYTHING as raw strings to find the header row manually
         raw_df = pd.read_csv(url, header=None, dtype=str).fillna("")
         
-        # SEARCH FOR THE HEADER ROW
+        # SEARCH FOR THE HEADER ROW AND THE FIRST BIB INSTANCE
         header_row_idx = -1
         bib_idx = -1
         
@@ -79,34 +77,37 @@ def load_data(mode, query=""):
             row_vals = [str(val).strip().lower() for val in row]
             if "bib" in row_vals:
                 header_row_idx = i
+                # .index() finds the FIRST occurrence only
                 bib_idx = row_vals.index("bib")
-                break
+                break # Stop searching rows once the header is found
         
-        if header_row_idx == -1:
-            st.error("Bib column not found. The spreadsheet structure may have changed.")
+        if bib_idx == -1:
+            # Referenced error in IMG_4607.jpeg
+            st.error("Bib column not found. Check spreadsheet headers.")
             return pd.DataFrame()
 
-        # Set the found row as headers and clean data
-        headers = [str(h).strip() for h in raw_df.iloc[header_row_idx]]
-        df = raw_df.iloc[header_row_idx + 1:].copy()
-        df.columns = headers
+        # Isolate the data below the header
+        df_data = raw_df.iloc[header_row_idx + 1:].copy()
         
-        # Find Name column (Search left of Bib for 'Name' or 'Team')
+        # Identify Name column by scanning LEFT of the FIRST bib
         name_idx = -1
+        header_labels = [str(h).strip() for h in raw_df.iloc[header_row_idx]]
         for i in range(bib_idx - 1, -1, -1):
-            h_low = headers[i].lower()
-            if "name" in h_low or "team" in h_low or "runner" in h_low:
+            h_low = header_labels[i].lower()
+            if any(word in h_low for word in ["name", "team", "runner"]):
                 name_idx = i
                 break
         if name_idx == -1: name_idx = max(0, bib_idx - 1)
 
-        # Strict Numeric Conversion for Bibs
-        df['_bib_clean'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
-        df = df.dropna(subset=['_bib_clean'])
+        # STRICT NUMERIC CONVERSION: Fix for IMG_4606.jpeg
+        # We use .iloc[:, bib_idx] to ensure we only pass ONE series, even if names are duplicated
+        bib_series = pd.to_numeric(df_data.iloc[:, bib_idx], errors='coerce')
+        df_data['_bib_clean'] = bib_series
+        df = df_data.dropna(subset=['_bib_clean']).copy()
         
-        # Category Filter
+        # Category Filter (Relay = 400s)
         is_relay = (df['_bib_clean'] >= 400) & (df['_bib_clean'] < 500)
-        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
+        active_df = df[is_relay] if mode == "Relay" else df[~is_relay]
         
         if query:
             active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
