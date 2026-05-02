@@ -6,30 +6,22 @@ import requests
 import io
 
 # 1. Setup & Styling
-st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
+st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
 
 st.markdown("""
     <style>
-    th { text-align: center !important; background-color: #f2f2f2; vertical-align: middle !important; }
-    td { text-align: center !important; vertical-align: middle !important; border-bottom: 1px solid #ddd; }
-    td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 180px; }
-    .status-box { line-height: 1.2; }
-    .time-sub { font-size: 0.85em; color: #555; }
+    th { text-align: center !important; background-color: #f2f2f2; }
+    td { text-align: center !important; border-bottom: 1px solid #ddd; }
+    td:nth-child(2) { text-align: left !important; font-weight: bold; }
+    .status-box { line-height: 1.2; font-weight: bold; color: #1e3a8a; }
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Timing (EDT Setup)
+# 2. Timing & Constants
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) 
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 
-def format_delta_hhh(delta):
-    total_seconds = int(delta.total_seconds())
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, _ = divmod(remainder, 60)
-    return f"{hours}h {minutes:02d}m"
-
-# 3. Station Logic
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -43,12 +35,11 @@ def calculate_metrics_dynamic(row, station_map, mode):
     
     for lap in range(1, max_loops + 1):
         for i, st_name in enumerate(STATION_NAMES):
-            # The map uses (lap, station_name) as the key
             col_idx = station_map.get((lap, st_name.lower()))
-            if col_idx is not None and col_idx < len(row):
+            if col_idx is not None:
                 val = str(row.iloc[col_idx]).strip()
-                # Check if cell contains a timestamp (HH:MM:SS)
-                if ":" in val:
+                # Check for timestamp or numeric data
+                if ":" in val or (len(val) > 4 and val.replace('.','').isdigit()):
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
@@ -61,111 +52,67 @@ def calculate_metrics_dynamic(row, station_map, mode):
     speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
     next_idx = (STATION_NAMES.index(last_st) + 1) % 4
     next_st = STATION_NAMES[next_idx]
-    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
+    status = f"<div class='status-box'>{last_st}<br><span style='font-size:0.8em; color:#555;'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loader (No Cache for Live Refresh)
-@st.cache_data(ttl=0)
+# 3. Data Loader with URL Buster
+@st.cache_data(ttl=0) # ttl=0 still encourages fresh fetches without full cache wipes
 def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
-        response = requests.get(url, timeout=10)
-        response.encoding = 'utf-8'
-        # Skip top 2 rows to get to the real headers on Row 3
-        return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str, na_filter=False)
-    except Exception as e:
-        st.error(f"Sync Error: {e}")
+        response = requests.get(url, timeout=5)
+        # SKIPROWS=2 ensures we land on Row 3 for our headers
+        return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str)
+    except:
         return None
 
-def process_leaderboard(df_raw, mode, query=""):
-    if df_raw is None or df_raw.empty: return pd.DataFrame()
-        
-    try:
-        # Step A: Identify Columns from Row 3 (Index 0 after skip)
-        headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
-        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h), 1)
-        name_idx = next((i for i, h in enumerate(headers) if any(x in h for x in ["runner", "team", "name"])), 0)
-
-        # Step B: Map Stations (Loop 1-5) jumping over 'ghost' columns
-        station_map = {}
-        last_found_idx = -1
-        for lap in range(1, 6):
-            for st_name in STATION_NAMES:
-                target = st_name.lower()
-                # Scan headers starting from the column AFTER the last station found
-                for col_idx in range(last_found_idx + 1, len(headers)):
-                    if target in headers[col_idx]:
-                        station_map[(lap, target)] = col_idx
-                        last_found_idx = col_idx
-                        break
-
-        # Step C: Process Runner Rows (Row 4 onwards)
-        df = df_raw.iloc[1:].copy()
-        df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
-        df = df.dropna(subset=['_bib_num'])
-        
-        # Relay vs 100 Miler logic
-        is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
-        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
-        
-        if query:
-            active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
-            
-        results = []
-        for _, row in active_df.iterrows():
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_dynamic(row, station_map, mode)
-            results.append({
-                "Pos": "", 
-                "Team/Runner": row.iloc[name_idx], 
-                "Bib": str(int(row['_bib_num'])),
-                "Status": status, 
-                "Miles": miles, 
-                "Speed": f"{speed} mph", 
-                "Next": expected, 
-                "Loop": loop, 
-                "sort_val": sort_val
-            })
-            
-        if not results: return pd.DataFrame()
-        
-        # Sort by furthest distance, then bib
-        full_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
-        moving = full_df['sort_val'] > 0.1
-        if moving.any():
-            full_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
-            
-        return full_df.drop(columns=['sort_val'])
-    except Exception as e:
-        st.error(f"Processing Error: {e}")
-        return pd.DataFrame()
-
-# 5. UI Layout
-st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
-
-if now > START_TIME:
-    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
-
-view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search_input = st.text_input("🔍 Search Name:")
-
-# Load data with a fresh buster every time
+# 4. Main Processing
 df_raw = load_raw_data(int(time.time()))
-leaderboard_df = process_leaderboard(df_raw, view_mode, search_input)
 
-if not leaderboard_df.empty:
-    st.write(leaderboard_df.to_html(escape=False, index=False), unsafe_allow_html=True)
-else:
-    st.info("No active runners found for this category.")
+if df_raw is not None:
+    # Identify Headers from Row 3
+    headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
+    
+    # Map Stations sequentially, jumping over ghost columns like 9 & 10
+    station_map = {}
+    last_found = -1
+    for lap in range(1, 6):
+        for st_name in STATION_NAMES:
+            for col_idx in range(last_found + 1, len(headers)):
+                if st_name.lower() in headers[col_idx]:
+                    station_map[(lap, st_name.lower())] = col_idx
+                    last_found = col_idx
+                    break
 
-# Debug Expander (Keep this to check those ghost columns)
-with st.expander("🛠️ Debug View: Raw Data (Row 3-5)"):
-    if df_raw is not None:
-        st.dataframe(df_raw.head(3))
+    df_runners = df_raw.iloc[1:].copy()
+    view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+    
+    results = []
+    for _, row in df_runners.iterrows():
+        bib_val = str(row.iloc[1]).strip() # Row index 1 is Column B (Bib)
+        if not bib_val.isdigit(): continue
+        
+        bib = int(bib_val)
+        is_relay = 400 <= bib < 500
+        
+        if (view_mode == "Relay" and is_relay) or (view_mode == "100 Miler" and not is_relay):
+            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_dynamic(row, station_map, view_mode)
+            results.append({
+                "Pos": "", "Name": row.iloc[0], "Bib": bib,
+                "Last Station": status, "Miles": miles, "Next": expected, 
+                "Loop": loop, "sort_val": sort_val
+            })
 
-if st.button("🔄 Force Refresh"):
-    st.cache_data.clear()
+    if results:
+        final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
+        final_df['Pos'] = range(1, len(final_df) + 1)
+        st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
+
+# 5. Manual Refresh Button (The Only Place We Clear)
+if st.button("🔄 Force Clear & Refresh"):
+    st.cache_data.clear() # Clears stored data only when clicked
     st.rerun()
 
-# 6. Auto-Refresh Logic
+# 6. Smooth Auto-Heartbeat
 time.sleep(20)
 st.rerun()
