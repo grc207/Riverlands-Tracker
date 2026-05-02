@@ -27,7 +27,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Data Processing Logic
+# 3. Positional Data Processing
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -38,27 +38,20 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_loops = 4 if mode == "100 Miler" else 5
     
     max_miles = 0.0
-    last_st = ""
-    last_time = ""
-    current_lap = 1
+    last_st, last_time, current_lap = "", "", 1
     
-    # SCANNING POSITIONS: 
-    # Start looking 1 column to the right of the first Bib column
-    # Each 'lap block' is 5 columns (4 stations + 1 spacer/bib)
     for lap in range(1, max_loops + 1):
+        # Anchor: find the first Bib column, then step through lap blocks
         start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
         
-        for i in range(4): # Check the 4 station slots in this lap block
+        for i in range(4):
             col_idx = start_search_idx + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                if ":" in val: # If it has a colon, it's a time
+                if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
-                        max_miles = dist
-                        last_st = STATION_NAMES[i]
-                        last_time = val
-                        current_lap = lap
+                        max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
 
     if max_miles == 0:
         return "On Course", 0.0, "---", 0.0, STATION_NAMES[0], 1, 0.1
@@ -67,39 +60,28 @@ def calculate_metrics_positional(row, bib_idx, mode):
         return "<b>FINISHED!</b>", max_miles, "---", 0.0, "---", max_loops, 999
 
     speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
-    next_idx = (STATION_NAMES.index(last_st) + 1) % 4
-    next_st = STATION_NAMES[next_idx]
+    next_st = STATION_NAMES[(STATION_NAMES.index(last_st) + 1) % 4]
     
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading
+# 4. Data Loading - Cleaned for dtype errors
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # Load raw data with no headers first to find the index of "Bib"
-        df_raw = pd.read_csv(url, skiprows=2, header=None, dtype=str).fillna("")
+        # Load without dtype='str' to avoid the error in IMG_4608
+        df_raw = pd.read_csv(url, skiprows=2, header=None).fillna("")
+        # Convert everything to string manually and safely
+        df_raw = df_raw.astype(str)
         
-        # Determine which column index is the "Bib" column
-        # We look at the first row (which was row 3 of the original sheet)
+        # Identify Bib and Name indices
         headers = df_raw.iloc[0].tolist()
-        bib_idx = -1
-        name_idx = -1
-        
-        for i, h in enumerate(headers):
-            if "bib" in str(h).lower():
-                bib_idx = i
-            if "team" in str(h).lower() or "runner" in str(h).lower():
-                name_idx = i
-        
-        if bib_idx == -1: bib_idx = 1 # Fallback to common index
-        if name_idx == -1: name_idx = 0 # Fallback to common index
+        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), 1)
+        name_idx = next((i for i, h in enumerate(headers) if "team" in h.lower() or "runner" in h.lower()), 0)
 
-        # Drop the header row from the data
+        # Process data rows
         df = df_raw.iloc[1:].copy()
-        
-        # Filter by Bib
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -113,15 +95,9 @@ def load_data(mode, query=""):
         for _, row in active_df.iterrows():
             status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
-                "Pos": "", 
-                "Team/Runner": row.iloc[name_idx], 
-                "Bib": str(int(row['_bib_num'])),
-                "Status": status, 
-                "Miles": miles, 
-                "Speed": f"{speed} mph", 
-                "Next": expected, 
-                "Loop": loop, 
-                "sort_val": sort_val
+                "Pos": "", "Team/Runner": row.iloc[name_idx], "Bib": str(int(row['_bib_num'])),
+                "Status": status, "Miles": miles, "Speed": f"{speed} mph", 
+                "Next": expected, "Loop": loop, "sort_val": sort_val
             })
             
         if not results: return pd.DataFrame()
@@ -142,13 +118,13 @@ if now > START_TIME:
     st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search = st.text_input("🔍 Search Name:")
+search_input = st.text_input("🔍 Search Name:")
 
 if st.button("🔄 Refresh Data"):
     st.cache_data.clear()
     st.rerun()
 
-data = load_data(view_mode, search)
+data = load_data(view_mode, search_input)
 
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
