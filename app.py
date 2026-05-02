@@ -74,7 +74,11 @@ if st.button("🔄 Refresh Data"):
     st.rerun()
 
 view = st.radio("Race Category:", ["100 Miler", "Relay"], horizontal=True)
-search_query = st.text_input("Search Runner or Bib:", "").strip().lower()
+
+# Only show search for 100 Milers
+search_query = ""
+if view == "100 Miler":
+    search_query = st.text_input("Search Runner or Bib:", "").strip().lower()
 
 # 4. Load & Process
 @st.cache_data(ttl=0)
@@ -95,31 +99,37 @@ for i in range(len(df)):
         
         # Category Filter
         if (view == "Relay" and is_relay_bib) or (view == "100 Miler" and not is_relay_bib):
-            # Search Filter
-            if not search_query or (search_query in name.lower() or search_query in bib):
-                miles, stat, t_str, t_mins, loop, is_dnf = get_runner_data(row, view)
-                
-                mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
-                r_time = f"{t_mins // 60}h {t_mins % 60}m"
-                
-                sort_key = (miles * 10000) - t_mins
-                if is_dnf: sort_key -= 1000000 
-                
-                results.append({
-                    "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
-                    "Status": f"<b style='color:{'red' if is_dnf else 'black'}'>{stat}</b><br>{t_str}",
-                    "MPH": mph, "Race Time": r_time, "Loop": loop, 
-                    "sort": sort_key
-                })
+            miles, stat, t_str, t_mins, loop, is_dnf = get_runner_data(row, view)
+            
+            mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
+            r_time = f"{t_mins // 60}h {t_mins % 60}m"
+            
+            sort_key = (miles * 10000) - t_mins
+            if is_dnf: sort_key -= 1000000 
+            
+            results.append({
+                "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
+                "Status": f"<b style='color:{'red' if is_dnf else 'black'}'>{stat}</b><br>{t_str}",
+                "MPH": mph, "Race Time": r_time, "Loop": loop, 
+                "sort": sort_key
+            })
 
-# 5. Display
+# 5. Display with Ranking Logic
 if results:
     f_df = pd.DataFrame(results).sort_values("sort", ascending=False)
+    # Assign true race position BEFORE applying search filter
     f_df["Pos"] = range(1, len(f_df) + 1)
-    st.write(f"**Tracking {len(f_df)} Runners**")
-    st.write(f_df[["Pos", "Name", "Bib", "Miles", "Status", "MPH", "Race Time", "Loop"]].to_html(escape=False, index=False), unsafe_allow_html=True)
+    
+    # Now filter by search if applicable
+    if search_query:
+        f_df = f_df[f_df['Name'].str.lower().str.contains(search_query) | f_df['Bib'].str.contains(search_query)]
+
+    if not f_df.empty:
+        st.write(f_df[["Pos", "Name", "Bib", "Miles", "Status", "MPH", "Race Time", "Loop"]].to_html(escape=False, index=False), unsafe_allow_html=True)
+    else:
+        st.info("No runners found matching your search.")
 else:
-    st.info("No runners found matching your selection or search.")
+    st.info("No runners found for this category.")
 
 st.markdown("---")
 st.caption("Disclaimer: This tracker is unofficial and community-led.")
