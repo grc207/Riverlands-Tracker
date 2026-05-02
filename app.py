@@ -35,9 +35,6 @@ MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
 def calculate_metrics_dynamic(row, station_map, mode):
-    """
-    station_map is a dict: {(loop_num, station_name): col_index}
-    """
     m_list = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
@@ -71,7 +68,14 @@ def load_raw_data():
     try:
         response = requests.get(url, timeout=10)
         response.encoding = 'utf-8'
-        return pd.read_csv(io.StringIO(response.text), header=None, dtype=str, na_filter=False)
+        # Crucial Fix: Skip the first 2 rows to land on the Header row
+        return pd.read_csv(
+            io.StringIO(response.text), 
+            skiprows=2, 
+            header=None, 
+            dtype=str, 
+            na_filter=False
+        )
     except Exception as e:
         st.error(f"Sync Error: {e}")
         return None
@@ -80,35 +84,26 @@ def process_leaderboard(df_raw, mode, query=""):
     if df_raw is None or df_raw.empty: return pd.DataFrame()
         
     try:
-        # A. Find Header Row & Column Indices
-        header_row_idx = 0
-        for i in range(min(10, len(df_raw))):
-            if "bib" in [str(x).lower() for x in df_raw.iloc[i]]:
-                header_row_idx = i
-                break
-        
-        headers = [str(h).lower().strip() for h in df_raw.iloc[header_row_idx].tolist()]
+        # After skipping 2 rows, Index 0 is our actual Header row
+        headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
         bib_idx = next((i for i, h in enumerate(headers) if "bib" in h), 1)
         name_idx = next((i for i, h in enumerate(headers) if any(x in h for x in ["runner", "team", "name"])), 0)
 
-        # B. Map Station Names to Columns (Search for "Middle out", etc.)
-        # This scans the headers to find which column corresponds to which station/lap
+        # Map Station Names to Columns (e.g. Find "Middle out" for Lap 1, Lap 2, etc)
         station_map = {}
-        current_scanning_lap = 1
         last_found_st_idx = -1
         
-        for lap in range(1, 6): # Support up to 5 laps
+        for lap in range(1, 6): 
             for st_name in STATION_NAMES:
                 target = st_name.lower()
-                # Search for the station name appearing AFTER the last one we found
                 for col_idx in range(last_found_st_idx + 1, len(headers)):
                     if target in headers[col_idx]:
                         station_map[(lap, target)] = col_idx
                         last_found_st_idx = col_idx
                         break
 
-        # C. Process Rows
-        df = df_raw.iloc[header_row_idx+1:].copy()
+        # Data starts from index 1 (the row after headers)
+        df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -154,7 +149,7 @@ leaderboard_df = process_leaderboard(df_raw, view_mode, search_input)
 if not leaderboard_df.empty:
     st.write(leaderboard_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("Waiting for race data to be entered...")
+    st.info("Waiting for race data...")
 
 if st.button("🔄 Refresh"):
     st.cache_data.clear()
