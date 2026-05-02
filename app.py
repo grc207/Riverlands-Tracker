@@ -38,18 +38,22 @@ def get_status(row, mode, global_has_data):
         return "At Start Line", 0.0, 999999, "<b>Middle out</b>"
 
     max_miles, furthest_station = 0.0, ""
-    # We iterate through the row items. Due to duplicate headers (Bib, Middle out, etc), 
-    # Pandas appends .1, .2, etc. to the column names.
+    
+    # Iterate through row; Pandas adds .1, .2 to duplicate names like "Middle out"
     for col_name, val in row.items():
         val_str = str(val).strip()
-        if ":" in val_str: # Check for timestamp
-            base = col_name.split('.')[0].strip()
+        if ":" in val_str: 
+            # Get the base name (e.g., "Middle out")
+            parts = col_name.split('.')
+            base = parts[0].strip()
+            
             if base in m_map:
                 try:
-                    # Determine lap based on the suffix (.1 = Lap 2, .2 = Lap 3, etc)
-                    suffix = col_name.split('.')[-1]
-                    lap = int(suffix) + 1 if suffix.isdigit() else 1
-                except: lap = 1
+                    # Lap logic: No suffix = Lap 1, .1 = Lap 2, .2 = Lap 3, etc.
+                    suffix = parts[-1]
+                    lap = int(suffix) + 1 if (len(parts) > 1 and suffix.isdigit()) else 1
+                except: 
+                    lap = 1
                 
                 dist = ((lap - 1) * loop_dist) + m_map[base]
                 if dist >= max_miles:
@@ -64,28 +68,28 @@ def get_status(row, mode, global_has_data):
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        # THE FIX: Skip the first 2 rows of merged headers to reach the real names/bibs
+        # SKIP 2 ROWS: Bypasses the '2026 Riverlands...' title and the merged 'Lap' headers
         df = pd.read_csv(url, skiprows=2, dtype=str).fillna("")
         
-        # Clean column names
+        # Clean column names for consistency
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Identify core columns
+        # Identify name and bib columns based on the visual layout
         name_col = next((c for c in df.columns if "Team/Runner" in c), df.columns[0])
         bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
 
-        # Filter out empty rows and convert Bib to numeric
+        # Convert Bib to numeric for filtering and drop rows without a valid bib
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
-        # Relay vs 100 Miler logic
+        # Filter Relay (400s) vs 100 Miler
         is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
             
         if query:
             active_df = active_df[active_df[name_col].str.contains(query, case=False, na=False)]
         
-        # Detect if race has started (any timestamps present)
+        # Detect if any runner has checked in at a station (looking for ":" timestamps)
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
         
         results = []
@@ -102,9 +106,11 @@ def load_data(mode, query=""):
             })
         
         if not results: return pd.DataFrame()
+        
+        # Sort by furthest distance, then by who got there first (Sort index)
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
         
-        # Ranking
+        # Assign rank only to those who have started moving
         mask = (full_df['Total Miles'] > 0)
         if mask.any():
             full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
@@ -116,7 +122,7 @@ def load_data(mode, query=""):
         st.error(f"Syncing Error: {e}")
         return pd.DataFrame()
 
-# 4. UI
+# 4. UI Layout
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:") if view_mode == "100 Miler" else ""
 
@@ -131,7 +137,7 @@ if not data.empty:
         table { width: 100%; border-collapse: collapse; }
         th { background-color: #f2f2f2; padding: 10px; border: 1px solid #ddd; }
         td { padding: 10px; border: 1px solid #ddd; text-align: center !important; }
-        td:nth-child(2) { text-align: left !important; font-weight: bold; }
+        td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 180px; }
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
