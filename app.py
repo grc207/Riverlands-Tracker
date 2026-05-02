@@ -34,7 +34,10 @@ STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5
 def get_status(row, mode, has_data):
     m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
-    if not has_data: return "Race starts May 2nd @ 6am", 0.0, 999999, "---"
+    
+    # REMOVED DNS CHECK: If no race data exists, just show the start time info
+    if not has_data: 
+        return "Race starts May 2nd @ 6am", 0.0, 999999, "<b>Middle out</b>"
 
     max_miles, furthest_station = 0.0, ""
     for col_name, val in row.items():
@@ -48,7 +51,10 @@ def get_status(row, mode, has_data):
                 dist = ((lap - 1) * loop_dist) + m_map[base]
                 if dist >= max_miles: max_miles, furthest_station = dist, base
 
-    if max_miles == 0: return "Ready", 0.0, 999999, "<b>Middle out</b>"
+    # If the race has data but this specific runner hasn't hit a station yet
+    if max_miles == 0: 
+        return "Waiting to Start", 0.0, 999999, "<b>Middle out</b>"
+        
     return f"<b>{furthest_station}</b>", max_miles, 500, "---"
 
 @st.cache_data(ttl=30)
@@ -58,16 +64,15 @@ def load_data(mode, query=""):
         df = pd.read_csv(url, dtype=str).fillna("")
         df.columns = [str(c).strip() for c in df.columns]
         
-        # EXACT MATCH SEARCH based on your provided image
+        # TARGETED COLUMN PICKING based on image_11f919.png
         name_col = next((c for c in df.columns if "Team/Runner" in c), None)
         bib_col = next((c for c in df.columns if "Bib" in c), None)
 
         if not name_col or not bib_col:
-            # Fallback in case "Team/Runner" is slightly different in the CSV raw data
-            name_col = next((c for c in df.columns if "Runner" in c), df.columns[0])
-            bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
+            st.error("Could not find 'Team/Runner' or 'Bib' columns.")
+            return pd.DataFrame()
 
-        # Filter and Process
+        # Filter valid bibs
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -77,6 +82,7 @@ def load_data(mode, query=""):
         if query:
             active_df = active_df[active_df[name_col].str.contains(query, case=False, na=False)]
         
+        # Check if any station data (timestamps) exists yet
         has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
         
         results = []
@@ -95,14 +101,12 @@ def load_data(mode, query=""):
         if not results: return pd.DataFrame()
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
         
-        # Assign position ranks
+        # Ranking
         mask = (full_df['Total Miles'] > 0)
         if mask.any():
             full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
         
-        # Clean up column for Streamlit
         full_df['Pos'] = full_df['Pos'].astype(str).replace(['nan', 'None'], '')
-        
         return full_df.drop(columns=['Sort'])
         
     except Exception as e:
