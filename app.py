@@ -68,7 +68,6 @@ def get_status(row, mode, global_has_data):
                     max_miles, furthest_station, last_time_str = calc_miles, base_header, val_str
 
     row_text = " ".join(map(str, row.values)).lower()
-    
     if "dnf" in row_text: 
         return "DNF", max_miles, "---", 999999, "---"
     if max_miles >= total_race_dist: 
@@ -85,21 +84,20 @@ def load_data(mode, query=""):
         df = pd.read_csv(url)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Position-based column selection
         name_col_name = df.columns[0]
         bib_col_name = df.columns[1]
 
-        # FIX: Robustly handle Bib conversion to avoid "int64" errors on empty strings
-        df[bib_col_name] = pd.to_numeric(df[bib_col_name], errors='coerce')
-        df = df.dropna(subset=[bib_col_name]) # Drop rows where Bib is missing or invalid
+        # REFINED CLEANING: Strip non-numeric junk and convert to float first
+        df[bib_col_name] = pd.to_numeric(df[bib_col_name].astype(str).str.replace(r'[^0-9.]', '', regex=True), errors='coerce')
+        df = df.dropna(subset=[bib_col_name])
 
-        # Filter by Bib Range
+        # Classification
         is_relay = (df[bib_col_name] >= 400) & (df[bib_col_name] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
 
-        # Clean Name column
+        # Clean invalid runner names
         active_df = active_df[active_df[name_col_name].notna()]
-        active_df = active_df[~active_df[name_col_name].astype(str).str.lower().isin(['runner', 'team', 'status'])]
+        active_df = active_df[~active_df[name_col_name].astype(str).str.lower().isin(['runner', 'team', 'status', 'nan', ''])]
 
         if query:
             active_df = active_df[active_df[name_col_name].astype(str).str.contains(query, case=False) | 
@@ -109,17 +107,25 @@ def load_data(mode, query=""):
 
         results = []
         for _, row in active_df.iterrows():
-            status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
-            results.append({
-                "Pos": 0, 
-                "Team/Runner": row[name_col_name], 
-                "Bib": int(row[bib_col_name]), # Now safe to convert to int
-                "Status": status, 
-                "Total Miles": miles, 
-                "Race Time": r_time, 
-                "Expected": expected, 
-                "SortSec": s_sec
-            })
+            try:
+                # Defensive check for Bib value
+                raw_bib = row[bib_col_name]
+                if pd.isna(raw_bib): continue
+                bib_val = int(float(raw_bib))
+                
+                status, miles, r_time, s_sec, expected = get_status(row, mode, global_has_data)
+                results.append({
+                    "Pos": 0, 
+                    "Team/Runner": row[name_col_name], 
+                    "Bib": bib_val,
+                    "Status": status, 
+                    "Total Miles": miles, 
+                    "Race Time": r_time, 
+                    "Expected": expected, 
+                    "SortSec": s_sec
+                })
+            except:
+                continue # Skip rows that still cause conversion issues
 
         if not results: return pd.DataFrame()
 
