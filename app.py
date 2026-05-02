@@ -4,7 +4,6 @@ import datetime
 import requests
 import io
 import time
-import re
 
 # 1. Setup
 st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
@@ -19,13 +18,12 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Hardcoded Essentials
-START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
+# 2. Timing Constants
+START_H = 6
 STATION_NAMES = ["Middle Out", "Conant Rd", "Middle Back", "Arrive S/F"]
 M_100 = [4.5, 13.0, 20.5, 25.0]
 M_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-# YOUR SPECIFIC COLUMNS
 MAP = {
     1: [6, 7, 8, 11],
     2: [12, 13, 14, 17],
@@ -34,16 +32,23 @@ MAP = {
     5: [30, 31, 32, 35]
 }
 
-def clean_time_to_minutes(val):
+def get_total_minutes(time_str):
+    """Manually parse HH:MM to avoid datetime errors."""
     try:
-        val = str(val).strip().upper()
-        if ":" not in val: return None
-        # Handle cases like "11:05 AM" or "11:05"
-        ts = pd.to_datetime(val).time()
-        dt = datetime.datetime(2026, 5, 2, ts.hour, ts.minute)
-        # If time is 12:00 AM - 5:59 AM, assume it's Sunday morning (Race Day + 1)
-        if ts.hour < 6: dt += datetime.timedelta(days=1)
-        return int((dt - START_TIME).total_seconds() // 60)
+        clean = str(time_str).strip().upper().replace(" AM", "").replace(" PM", "")
+        if ":" not in clean: return None
+        
+        parts = clean.split(":")
+        h = int(parts[0])
+        m = int(parts[1])
+        
+        # Simple PM handling if someone enters 1:00 instead of 13:00
+        if "PM" in str(time_str).upper() and h < 12: h += 12
+        # Overnight handling: if hour is 0-5, it's the next day (Race + 24hrs)
+        if h < START_H: h += 24
+        
+        # Minutes since 6:00 AM
+        return (h * 60 + m) - (START_H * 60)
     except:
         return None
 
@@ -52,32 +57,28 @@ def get_runner_data(row, mode):
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
-    # Defaults for "On Course" runners
-    best_dist, best_stat, best_time_str, best_time_mins, best_loop = 0.0, "Start", "---", 0, 1
+    # Default State
+    d, s, t_str, t_mins, lp = 0.0, "Start", "---", 0, 1
     
-    # Check laps sequentially
     for lap in range(1, max_loops + 1):
         lap_cols = MAP[lap]
-        lap_found = False
+        found_in_lap = False
         for i, col_idx in enumerate(lap_cols):
             if col_idx < len(row):
                 val = row.iloc[col_idx]
-                mins = clean_time_to_minutes(val)
+                mins = get_total_minutes(val)
                 if mins is not None:
-                    best_dist = ((lap - 1) * loop_size) + dist_list[i]
-                    best_time_str = str(val).strip()
-                    best_time_mins = mins
-                    best_stat = STATION_NAMES[i]
-                    best_loop = lap
-                    lap_found = True
-        
-        # Sequential Lock: If we found no data in this lap, don't look at next lap
-        if not lap_found:
-            break
+                    d = ((lap - 1) * loop_size) + dist_list[i]
+                    s = STATION_NAMES[i]
+                    t_str = str(val).strip()
+                    t_mins = mins
+                    lp = lap
+                    found_in_lap = True
+        if not found_in_lap: break # Sequential Lock
             
-    return best_dist, best_stat, best_time_str, best_time_mins, best_loop
+    return d, s, t_str, t_mins, lp
 
-# 3. Load Data
+# 3. App Logic
 @st.cache_data(ttl=0)
 def load():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
@@ -94,49 +95,47 @@ for i in range(len(df)):
     
     if bib.isdigit() and len(name) > 1:
         b_val = int(bib)
-        is_relay_bib = 400 <= b_val < 500
-        
-        # Only process runners for the active toggle
-        if (view == "Relay") == is_relay_bib:
-            miles, stat, t_str, t_mins, loop_num = get_runner_data(row, view)
+        if (view == "Relay") == (400 <= b_val < 500):
+            miles, stat, t_str, t_mins, loop = get_runner_data(row, view)
             
-            # MPH Calculation
+            # MPH & Race Time
             mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
-            race_time_display = f"{t_mins // 60}h {t_mins % 60}m" if t_mins > 0 else "0h 0m"
+            r_time = f"{t_mins // 60}h {t_mins % 60}m"
             
             # Expected Next
             expected_html = "---"
-            max_dist = (4 * 25.0) if view == "100 Miler" else (5 * 20.0)
-            
-            if mph > 0 and miles < max_dist:
-                curr_idx = STATION_NAMES.index(stat)
-                next_idx = (curr_idx + 1) % 4
-                next_st_name = STATION_NAMES[next_idx]
-                target_lap = loop_num + 1 if (next_idx == 0 and curr_idx == 3) else loop_num
+            max_d = (4 * 25.0) if view == "100 Miler" else (5 * 20.0)
+            if mph > 0 and miles < max_d:
+                c_idx = STATION_NAMES.index(stat)
+                n_idx = (c_idx + 1) % 4
+                n_st = STATION_NAMES[n_idx]
+                t_lp = loop + 1 if (n_idx == 0 and c_idx == 3) else loop
                 
-                dist_list = M_100 if view == "100 Miler" else M_RELAY
-                l_size = 25.0 if view == "100 Miler" else 20.0
-                next_dist = ((target_lap - 1) * l_size) + dist_list[next_idx]
+                d_list = M_100 if view == "100 Miler" else M_RELAY
+                l_sz = 25.0 if view == "100 Miler" else 20.0
+                n_dist = ((t_lp - 1) * l_sz) + d_list[n_idx]
                 
-                mins_to_next = ((next_dist - miles) / mph) * 60
-                arrival = START_TIME + datetime.timedelta(minutes=t_mins + mins_to_next)
-                expected_html = f"<div class='expected-box'>{next_st_name}<br><span class='sub-text'>{arrival.strftime('%-I:%M %p')}</span></div>"
+                eta_m = t_mins + ((n_dist - miles) / mph * 60)
+                eta_h = int((eta_m + (START_H * 60)) // 60) % 24
+                eta_min = int(eta_m % 60)
+                ampm = "AM" if eta_h < 12 or eta_h >= 24 else "PM"
+                display_h = eta_h if eta_h <= 12 else eta_h - 12
+                if display_h == 0: display_h = 12
+                
+                expected_html = f"<div class='expected-box'>{n_st}<br><span class='sub-text'>{display_h}:{eta_min:02d} {ampm}</span></div>"
 
-            # Custom Sort Rank
-            sort_rank = (miles * 10000) - t_mins
+            # Sort Key
+            sort_val = (miles * 10000) - t_mins
             
             results.append({
                 "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
                 "Status (Last Seen)": f"<div class='status-box'>{stat}<br><span class='sub-text'>{t_str}</span></div>",
-                "Expected Next": expected_html, "MPH": mph, "Race Time": race_time_display, 
-                "Loop": loop_num, "sort": sort_rank
+                "Expected Next": expected_html, "MPH": mph, "Race Time": r_time, 
+                "Loop": loop, "sort": sort_val
             })
 
 if results:
     f_df = pd.DataFrame(results).sort_values("sort", ascending=False)
     f_df["Pos"] = range(1, len(f_df) + 1)
-    # Order with Loop at the end
-    display_cols = ["Pos", "Name", "Bib", "Miles", "Status (Last Seen)", "Expected Next", "MPH", "Race Time", "Loop"]
-    st.write(f_df[display_cols].to_html(escape=False, index=False), unsafe_allow_html=True)
-else:
-    st.info("No runners found for this category.")
+    cols = ["Pos", "Name", "Bib", "Miles", "Status (Last Seen)", "Expected Next", "MPH", "Race Time", "Loop"]
+    st.write(f_df[cols].to_html(escape=False, index=False), unsafe_allow_html=True)
