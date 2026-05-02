@@ -5,7 +5,7 @@ import requests
 import io
 
 # 1. Setup & Branding
-st.set_page_config(page_title="Riverlands 100 Live Tracker", layout="wide")
+st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
 
 col1, col2 = st.columns([1, 5])
 with col1:
@@ -40,9 +40,7 @@ def clean_time_to_minutes(val):
         return None
 
 def get_runner_data(row, mode):
-    # DNF CHECK: Scan the whole row for the string "DNF"
     is_dnf = row.astype(str).str.contains("DNF", case=False).any()
-    
     dist_list = M_100 if mode == "100 Miler" else M_RELAY
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
@@ -70,7 +68,15 @@ def get_runner_data(row, mode):
         
     return best_dist, best_stat, best_time_str, best_time_mins, best_loop, is_dnf
 
-# 3. Process
+# 3. Sidebar / Controls
+if st.button("🔄 Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
+view = st.radio("Race Category:", ["100 Miler", "Relay"], horizontal=True)
+search_query = st.text_input("Search Runner or Bib:", "").strip().lower()
+
+# 4. Load & Process
 @st.cache_data(ttl=0)
 def load():
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
@@ -78,37 +84,42 @@ def load():
     return pd.read_csv(io.StringIO(res.text), header=None, dtype=str)
 
 df = load()
-view = st.radio("Race Category:", ["100 Miler", "Relay"], horizontal=True)
-
 results = []
+
 for i in range(len(df)):
     row = df.iloc[i]
     name, bib = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
+    
     if bib.isdigit() and len(name) > 1:
         is_relay_bib = 400 <= int(bib) < 500
+        
+        # Category Filter
         if (view == "Relay" and is_relay_bib) or (view == "100 Miler" and not is_relay_bib):
-            miles, stat, t_str, t_mins, loop, is_dnf = get_runner_data(row, view)
-            
-            mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
-            r_time = f"{t_mins // 60}h {t_mins % 60}m"
-            
-            # Sorting: DNFs should ideally drop to the bottom or rank by their last mileage
-            # We subtract a large penalty from DNF sort keys to move them down
-            sort_key = (miles * 10000) - t_mins
-            if is_dnf:
-                sort_key -= 1000000 
-            
-            results.append({
-                "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
-                "Status": f"<b style='color:{'red' if is_dnf else 'black'}'>{stat}</b><br>{t_str}",
-                "MPH": mph, "Race Time": r_time, "Loop": loop, 
-                "sort": sort_key
-            })
+            # Search Filter
+            if not search_query or (search_query in name.lower() or search_query in bib):
+                miles, stat, t_str, t_mins, loop, is_dnf = get_runner_data(row, view)
+                
+                mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
+                r_time = f"{t_mins // 60}h {t_mins % 60}m"
+                
+                sort_key = (miles * 10000) - t_mins
+                if is_dnf: sort_key -= 1000000 
+                
+                results.append({
+                    "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
+                    "Status": f"<b style='color:{'red' if is_dnf else 'black'}'>{stat}</b><br>{t_str}",
+                    "MPH": mph, "Race Time": r_time, "Loop": loop, 
+                    "sort": sort_key
+                })
 
+# 5. Display
 if results:
     f_df = pd.DataFrame(results).sort_values("sort", ascending=False)
     f_df["Pos"] = range(1, len(f_df) + 1)
+    st.write(f"**Tracking {len(f_df)} Runners**")
     st.write(f_df[["Pos", "Name", "Bib", "Miles", "Status", "MPH", "Race Time", "Loop"]].to_html(escape=False, index=False), unsafe_allow_html=True)
+else:
+    st.info("No runners found matching your selection or search.")
 
 st.markdown("---")
 st.caption("Disclaimer: This tracker is unofficial and community-led.")
