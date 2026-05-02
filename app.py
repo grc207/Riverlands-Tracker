@@ -61,26 +61,24 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. The "Invincible" Loader
+# 4. Data Loader with Verification Mode
 @st.cache_data(ttl=10)
-def load_data(mode, query=""):
+def load_raw_data():
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # Step A: Get raw text via requests to avoid Pandas URL parsing issues
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         response.encoding = 'utf-8'
-        raw_csv_text = response.text
-        
-        # Step B: Load without header inference or type checking
-        df_raw = pd.read_csv(
-            io.StringIO(raw_csv_text),
-            skiprows=2,
-            header=None,
-            dtype=str,
-            na_filter=False,  # This is the key to stopping the 'str' error
-            keep_default_na=False
-        )
+        # Read everything as raw text to avoid the dtype 'str' error
+        return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str, na_filter=False)
+    except Exception as e:
+        st.error(f"Failed to fetch Google Sheet: {e}")
+        return None
 
+def process_leaderboard(df_raw, mode, query=""):
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame()
+        
+    try:
         headers = df_raw.iloc[0].tolist()
         bib_idx = next((i for i, h in enumerate(headers) if h and "bib" in str(h).lower()), 1)
         name_idx = next((i for i, h in enumerate(headers) if h and ("team" in str(h).lower() or "runner" in str(h).lower())), 0)
@@ -113,27 +111,39 @@ def load_data(mode, query=""):
             
         return full_df.drop(columns=['sort_val'])
     except Exception as e:
-        st.error(f"Sync Error: {e}")
+        st.error(f"Processing Error: {e}")
         return pd.DataFrame()
 
 # 5. UI
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
+
 if now > START_TIME:
     st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search_input = st.text_input("🔍 Search Name:")
 
-if st.button("🔄 Refresh Data"):
+# LOAD DATA
+df_raw = load_raw_data()
+leaderboard_df = process_leaderboard(df_raw, view_mode, search_input)
+
+if not leaderboard_df.empty:
+    st.write(leaderboard_df.to_html(escape=False, index=False), unsafe_allow_html=True)
+else:
+    st.info("No active runners found matching criteria.")
+
+# VERIFICATION / DEBUG SECTION
+st.divider()
+if st.checkbox("🛠️ Show Debug: Raw Data Check"):
+    if df_raw is not None:
+        st.write("First 10 rows of the raw spreadsheet (to verify connection):")
+        st.dataframe(df_raw.head(10))
+    else:
+        st.warning("Data check failed. No spreadsheet found.")
+
+if st.button("🔄 Refresh"):
     st.cache_data.clear()
     st.rerun()
-
-data = load_data(view_mode, search_input)
-
-if not data.empty:
-    st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
-else:
-    st.info("Loading live data...")
 
 time.sleep(15)
 st.rerun()
