@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import time
 
-# 1. Setup & Centered Styling
+# 1. Setup & Styling
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
 
 st.markdown("""
@@ -16,7 +16,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Timing Logic
+# 2. Timing logic
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) # UTC to EDT
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
@@ -27,7 +27,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Positional Data Processing
+# 3. Positional reading logic (Left-to-Right from Bib)
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -40,15 +40,16 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
-    # Reads every cell to the right of Bib
+    # Read sequentially to the right of the Bib column
     for lap in range(1, max_loops + 1):
-        # Calculation: 1 column after Bib + (5 columns per lap block)
+        # Assumes 5 columns per lap block (4 stations + 1 spacer)
         start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
         
         for i in range(4):
             col_idx = start_search_idx + i
             if col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
+                # Check for a time format (colon)
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
@@ -66,12 +67,12 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading - Total Bypass Mode
+# 4. Total Bypass Loader (Fixes IMG_4610_2.jpeg)
 @st.cache_data(ttl=10)
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
-        # engine='python' and na_filter=False prevents the crash in IMG_4610_2.jpeg
+        # Use Python engine and disable NA filtering to stop the crash
         df_raw = pd.read_csv(
             url, 
             skiprows=2, 
@@ -81,11 +82,12 @@ def load_data(mode, query=""):
             na_filter=False
         )
         
-        # Identify Bib and Name indices
-        headers = df_raw.iloc[0].tolist()
-        bib_idx = next((i for i, h in enumerate(headers) if h and "bib" in str(h).lower()), 1)
-        name_idx = next((i for i, h in enumerate(headers) if h and ("team" in str(h).lower() or "runner" in str(h).lower())), 0)
+        # Manually find Name and Bib locations in the first row
+        headers = df_raw.iloc[0].astype(str).tolist()
+        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), 1)
+        name_idx = next((i for i, h in enumerate(headers) if "runner" in h.lower() or "team" in h.lower()), 0)
 
+        # Separate data from headers
         df = df_raw.iloc[1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
