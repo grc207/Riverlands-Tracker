@@ -16,7 +16,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Timing Logic (UTC to EDT)
+# 2. Timing Logic (EDT)
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4)
 
@@ -29,7 +29,7 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Positional Search Logic
+# 3. Data Processing Logic
 STATIONS = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
@@ -42,10 +42,9 @@ def calculate_metrics_positional(row, bib_idx, mode):
     max_miles = 0.0
     last_st, last_time, current_lap = "", "", 1
     
+    # Position logic: 4 stations + 1 spacer/repeated bib = block of 5
     for lap in range(1, max_loops + 1):
-        # Anchor to the FIRST bib column, then jump blocks of 5
         start_search = (bib_idx + 1) + ((lap - 1) * 5)
-        
         for i in range(4):
             col_idx = start_search + i
             if col_idx < len(row):
@@ -64,45 +63,49 @@ def calculate_metrics_positional(row, bib_idx, mode):
     next_st = STATIONS[(STATIONS.index(last_st) + 1) % 4]
     return f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>", max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading & Dynamic Header Mapping
+# 4. Data Loading
 @st.cache_data(ttl=15)
 def load_data(mode, query=""):
-    t_stamp = int(time.time())
-    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={t_stamp}"
+    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     
     try:
+        # Load raw
         raw_df = pd.read_csv(url, header=None, dtype=str).fillna("")
         
-        # Find the row containing "Bib"
-        header_row_idx = 0
+        # Search for Header Row containing "Bib"
+        header_idx = 0
         for i, row in raw_df.iterrows():
             if any("bib" in str(cell).lower() for cell in row):
-                header_row_idx = i
+                header_idx = i
                 break
         
-        # Set headers and data
-        header_labels = [str(c).strip() for c in raw_df.iloc[header_row_idx]]
-        df = raw_df.iloc[header_row_idx+1:].copy()
-        df.columns = header_labels
+        headers = [str(c).strip() for c in raw_df.iloc[header_idx]]
+        df = raw_df.iloc[header_idx+1:].copy()
+        df.columns = headers
         
-        # FIND THE FIRST BIB COLUMN ONLY
-        bib_idx = -1
-        for i, col_name in enumerate(header_labels):
-            if "bib" in col_name.lower():
-                bib_idx = i
-                break # Stop at the first one found
+        # 1. Identify FIRST Bib Column Index
+        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), -1)
+        
+        # 2. Identify Name/Team Column (Looking specifically for "name" or "team" to the left)
+        name_idx = -1
+        for i in range(bib_idx - 1, -1, -1):
+            h_lower = headers[i].lower()
+            if "name" in h_lower or "team" in h_lower or "runner" in h_lower:
+                name_idx = i
+                break
+        # Fallback to bib_idx - 1 if no name header found
+        if name_idx == -1: name_idx = max(0, bib_idx - 1)
         
         if bib_idx == -1:
-            st.error("Error: Could not find any column named 'Bib'.")
+            st.error("Could not locate 'Bib' column.")
             return pd.DataFrame()
             
-        name_idx = bib_idx - 1 
-        
-        # Convert ONLY that specific column to numeric
-        # This prevents the "arg must be a list" error
-        df['_bib_clean'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
+        # Fix for IMG_4605.jpeg error: pass only the specific column string name
+        bib_col_name = headers[bib_idx]
+        df['_bib_clean'] = pd.to_numeric(df[bib_col_name], errors='coerce')
         df = df.dropna(subset=['_bib_clean'])
         
+        # Filter Category
         is_relay = (df['_bib_clean'] >= 400) & (df['_bib_clean'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
         
@@ -132,22 +135,24 @@ def load_data(mode, query=""):
 
 # 5. UI Layout
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
+
 if now > START_TIME:
-    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
+    elapsed_time = now - START_TIME
+    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(elapsed_time)}")
 
-view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search_input = st.text_input("🔍 Search Name:")
+mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+search = st.text_input("🔍 Search Name:")
 
-if st.button("🔄 Force Refresh Data"):
+if st.button("🔄 Force Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-data_output = load_data(view_mode, search_input)
+data = load_data(mode, search)
 
-if not data_output.empty:
-    st.write(data_output.to_html(escape=False, index=False), unsafe_allow_html=True)
+if not data.empty:
+    st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No active runners found or currently loading...")
+    st.info("Loading live data...")
 
 time.sleep(30)
 st.rerun()
