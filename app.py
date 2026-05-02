@@ -36,10 +36,11 @@ def calculate_metrics_dynamic(row, station_map, mode):
     for lap in range(1, max_loops + 1):
         for i, st_name in enumerate(STATION_NAMES):
             col_idx = station_map.get((lap, st_name.lower()))
-            if col_idx is not None:
+            if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                # Check for timestamp or numeric data
-                if ":" in val or (len(val) > 4 and val.replace('.','').isdigit()):
+                
+                # REFINED LOGIC: If the cell isn't empty and isn't just a dash/placeholder
+                if val and val not in ["", "-", "nan", "None", "0"]:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
                         max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
@@ -52,28 +53,31 @@ def calculate_metrics_dynamic(row, station_map, mode):
     speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
     next_idx = (STATION_NAMES.index(last_st) + 1) % 4
     next_st = STATION_NAMES[next_idx]
-    status = f"<div class='status-box'>{last_st}<br><span style='font-size:0.8em; color:#555;'>{last_time}</span></div>"
+    
+    # Clean up timestamp display if it's a long date-time string
+    display_time = last_time.split(" ")[-1] if " " in last_time else last_time
+    status = f"<div class='status-box'>{last_st}<br><span style='font-size:0.85em; color:#555;'>{display_time}</span></div>"
+    
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 3. Data Loader with URL Buster
-@st.cache_data(ttl=0) # ttl=0 still encourages fresh fetches without full cache wipes
+# 3. Data Loader
+@st.cache_data(ttl=0)
 def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
         response = requests.get(url, timeout=5)
-        # SKIPROWS=2 ensures we land on Row 3 for our headers
+        # Skip 2 rows to reach Row 3 (Headers)
         return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str)
     except:
         return None
 
-# 4. Main Processing
+# 4. Processing
 df_raw = load_raw_data(int(time.time()))
 
 if df_raw is not None:
-    # Identify Headers from Row 3
     headers = [str(h).lower().strip() for h in df_raw.iloc[0].tolist()]
     
-    # Map Stations sequentially, jumping over ghost columns like 9 & 10
+    # Map Stations based on Row 3 labels
     station_map = {}
     last_found = -1
     for lap in range(1, 6):
@@ -89,10 +93,11 @@ if df_raw is not None:
     
     results = []
     for _, row in df_runners.iterrows():
-        bib_val = str(row.iloc[1]).strip() # Row index 1 is Column B (Bib)
-        if not bib_val.isdigit(): continue
+        # Get Bib (usually column 1 or 2)
+        bib_str = str(row.iloc[1]).strip() if len(row) > 1 else ""
+        if not bib_str.isdigit(): continue
         
-        bib = int(bib_val)
+        bib = int(bib_str)
         is_relay = 400 <= bib < 500
         
         if (view_mode == "Relay" and is_relay) or (view_mode == "100 Miler" and not is_relay):
@@ -108,11 +113,11 @@ if df_raw is not None:
         final_df['Pos'] = range(1, len(final_df) + 1)
         st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
 
-# 5. Manual Refresh Button (The Only Place We Clear)
+# 5. UI & Refresh
 if st.button("🔄 Force Clear & Refresh"):
-    st.cache_data.clear() # Clears stored data only when clicked
+    st.cache_data.clear()
     st.rerun()
 
-# 6. Smooth Auto-Heartbeat
+# Auto-reload every 20s
 time.sleep(20)
 st.rerun()
