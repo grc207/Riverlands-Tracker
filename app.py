@@ -5,126 +5,129 @@ import datetime
 # 1. Setup
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
 
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    try:
-        st.image("logo.jpg", use_container_width=True)
-    except:
-        st.write("*(Logo: logo.jpg)*")
-
-st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
-
-# 2. Race Clock
-utc_now = datetime.datetime.utcnow()
-now = utc_now - datetime.timedelta(hours=4) 
+# 2. Race Constants & Timing
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
+utc_now = datetime.datetime.utcnow()
+now = utc_now - datetime.timedelta(hours=4) # Adjust for local time
 
-if now < START_TIME:
-    delta = START_TIME - now
-    st.subheader(f"⏱️ {delta.days * 24 + delta.seconds // 3600}h {(delta.seconds // 60) % 60:02d}m")
-    st.write("**Countdown to Race Start**")
-else:
-    st.write("**Race in Progress**")
-
-# 3. Data Logic
 STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
 STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
+STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 
-def get_status(row, mode, global_has_data):
+def calculate_metrics(row, mode):
     m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
+    max_loops = 4 if mode == "100 Miler" else 5
     
-    if not global_has_data:
-        return "At Start Line", 0.0, 999999, "<b>Middle out</b>"
-
-    max_miles, furthest_station = 0.0, ""
+    max_miles = 0.0
+    last_station = ""
+    last_time_str = ""
+    current_loop = 1
     
-    # Iterate through row; Pandas adds .1, .2 to duplicate names like "Middle out"
+    # 1. Parse timestamps to find progress
     for col_name, val in row.items():
         val_str = str(val).strip()
-        if ":" in val_str: 
-            # Get the base name (e.g., "Middle out")
+        if ":" in val_str:
             parts = col_name.split('.')
             base = parts[0].strip()
-            
             if base in m_map:
-                try:
-                    # Lap logic: No suffix = Lap 1, .1 = Lap 2, .2 = Lap 3, etc.
-                    suffix = parts[-1]
-                    lap = int(suffix) + 1 if (len(parts) > 1 and suffix.isdigit()) else 1
-                except: 
-                    lap = 1
-                
+                lap = int(parts[-1]) + 1 if (len(parts) > 1 and parts[-1].isdigit()) else 1
                 dist = ((lap - 1) * loop_dist) + m_map[base]
+                
                 if dist >= max_miles:
-                    max_miles, furthest_station = dist, base
+                    max_miles = dist
+                    last_station = base
+                    last_time_str = val_str
+                    current_loop = lap
 
+    # 2. Logic for Pre-Race vs. Active
+    if now < START_TIME:
+        return "Race Starts May 2nd @ 6am", 0.0, "00:00", "0.0", "Middle out", 1
+    
     if max_miles == 0:
-        return "On Course", 0.0, 999999, "<b>Middle out</b>"
-        
-    return f"<b>{furthest_station}</b>", max_miles, 500, "---"
+        return "On Course", 0.0, "---", "0.0", "Middle out", 1
 
-@st.cache_data(ttl=30)
+    # 3. Handle Finishing
+    if max_miles >= (max_loops * loop_dist):
+        return "<b>FINISHED!</b>", max_miles, "---", "---", "---", max_loops
+
+    # 4. Elapsed Time & Speed
+    elapsed_str = "---"
+    speed = "0.0"
+    try:
+        # Simple string-based elapsed time if timestamps are TOD
+        elapsed_str = last_time_str 
+        # Speed logic: total miles / hours since 6am (simplified for now)
+        hours_since_start = (now - START_TIME).total_seconds() / 3600
+        if hours_since_start > 0:
+            speed = round(max_miles / hours_since_start, 1)
+    except: pass
+
+    # 5. Expected & Pacing Logic
+    # 100 milers: +5% per loop after Loop 1. Relay: +10% per loop.
+    next_idx = (STATION_ORDER.index(last_station) + 1) % len(STATION_ORDER)
+    next_st = STATION_ORDER[next_idx]
+    
+    status_html = f"{last_station}<br><small>{last_time_str}</small>"
+    
+    return status_html, max_miles, elapsed_str, speed, next_st, current_loop
+
+@st.cache_data(ttl=15)
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        # SKIP 2 ROWS: Bypasses the '2026 Riverlands...' title and the merged 'Lap' headers
         df = pd.read_csv(url, skiprows=2, dtype=str).fillna("")
-        
-        # Clean column names for consistency
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Identify name and bib columns based on the visual layout
         name_col = next((c for c in df.columns if "Team/Runner" in c), df.columns[0])
         bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
 
-        # Convert Bib to numeric for filtering and drop rows without a valid bib
         df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
-        # Filter Relay (400s) vs 100 Miler
         is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
             
         if query:
             active_df = active_df[active_df[name_col].str.contains(query, case=False, na=False)]
         
-        # Detect if any runner has checked in at a station (looking for ":" timestamps)
-        global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
-        
         results = []
         for _, row in active_df.iterrows():
-            status, miles, s_sec, expected = get_status(row, mode, global_has_data)
+            status, miles, elapsed, speed, expected, loop = calculate_metrics(row, mode)
             results.append({
-                "Pos": "", 
-                "Team/Runner": row[name_col], 
+                "Pos": 0,
+                "Team/Runner": row[name_col],
                 "Bib": str(int(row['_bib_num'])),
-                "Status": status, 
-                "Total Miles": miles, 
-                "Expected": expected, 
-                "Sort": s_sec
+                "Status": status,
+                "Total Miles": miles,
+                "Elapsed Time": elapsed,
+                "Speed": f"{speed} mph",
+                "Expected": expected,
+                "Loop": loop
             })
         
         if not results: return pd.DataFrame()
         
-        # Sort by furthest distance, then by who got there first (Sort index)
-        full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Sort'], ascending=[False, True])
+        # Live Sorting: Miles (Desc), then Bib (Asc) as a secondary
+        full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'Bib'], ascending=[False, True])
         
-        # Assign rank only to those who have started moving
-        mask = (full_df['Total Miles'] > 0)
-        if mask.any():
-            full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
+        # Assign Position
+        full_df['Pos'] = range(1, len(full_df) + 1)
         
-        full_df['Pos'] = full_df['Pos'].astype(str).replace(['nan', 'None'], '')
-        return full_df.drop(columns=['Sort'])
+        return full_df
         
     except Exception as e:
         st.error(f"Syncing Error: {e}")
         return pd.DataFrame()
 
 # 4. UI Layout
+col1, col2, col3 = st.columns([1, 2, 1])
+with col2:
+    try: st.image("logo.jpg", use_container_width=True)
+    except: st.write("*(Logo: logo.jpg)*")
+
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search = st.text_input("🔍 Search Name:") if view_mode == "100 Miler" else ""
+search = st.text_input("🔍 Search Name:")
 
 if st.button("🔄 Refresh"):
     st.cache_data.clear()
@@ -134,11 +137,11 @@ data = load_data(view_mode, search)
 
 if not data.empty:
     st.markdown("""<style>
-        table { width: 100%; border-collapse: collapse; }
-        th { background-color: #f2f2f2; padding: 10px; border: 1px solid #ddd; }
-        td { padding: 10px; border: 1px solid #ddd; text-align: center !important; }
-        td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 180px; }
+        table { width: 100%; border-collapse: collapse; font-size: 14px; }
+        th { background-color: #f2f2f2; padding: 12px; border-bottom: 2px solid #333; }
+        td { padding: 12px; border-bottom: 1px solid #ddd; text-align: center !important; }
+        td:nth-child(2) { text-align: left !important; font-weight: bold; }
     </style>""", unsafe_allow_html=True)
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("Loading participants...")
+    st.info("Waiting for data...")
