@@ -41,7 +41,7 @@ else:
     elapsed_diff = now - START_TIME
     display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
     st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-    st.write("**Elapsed Race Time**")
+    st.write("**Elapsed Race Time**") # Label matched to user image
 
 # 4. Data Processing
 STATIONS_100 = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
@@ -117,6 +117,7 @@ def get_status(row, mode, global_has_data):
         next_lap = calculated_loop + 1 if next_idx == 0 else calculated_loop
         next_miles = ((next_lap - 1) * loop_dist) + m_map[next_base]
         if next_miles <= total_race_dist:
+            # 100 Miler Progressive Fatigue logic
             penalty = 1.10 if mode == "Relay" else 1.0 + (max(0, calculated_loop - 1) * 0.05)
             dist_to_go = next_miles - max_miles
             sec_to_next = (dist_to_go / avg_mph) * 3600 * penalty
@@ -128,19 +129,25 @@ def get_status(row, mode, global_has_data):
 
 @st.cache_data(ttl=30)
 def load_data(mode, query=""):
-    df = pd.read_csv(f"https://docs.google.com/spreadsheets/d/1J1DJ8HGhRMa7wpl6wvbgchzGJ4cYzsfc0YZSPGbTiKU/export?format=csv&gid=0&cachebust={time.time()}")
+    # Converted URL to CSV output with cache-busting
+    raw_url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
+    full_url = f"{raw_url}&cachebust={time.time()}"
+
+    df = pd.read_csv(full_url)
     df.columns = [str(c).strip() for c in df.columns]
-    mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
-    gap = df[mask].index[0] if len(df[mask]) > 0 else len(df)
     
-    # Filter by mode first
+    # Logic to split Relay and 100 Miler based on the blank row gap
+    mask = df['Team/Runner'].isna() | (df['Team/Runner'].astype(str).str.strip() == "")
+    gap_indices = df[mask].index.tolist()
+    gap = gap_indices[0] if gap_indices else len(df)
+    
     active_df = (df.loc[:gap-1] if mode == "Relay" else df.loc[gap+1:]).copy()
     active_df = active_df[active_df['Team/Runner'].notna() & (active_df['Team/Runner'].astype(str).str.strip() != "")]
     
     bib_col = [c for c in df.columns if 'Bib' in c][0]
     active_df[bib_col] = active_df[bib_col].astype(str).replace(r'\.0$', '', regex=True)
 
-    # SEARCH LOGIC: Only apply to 100 Miler view
+    # Search Logic: Only for 100 Milers
     if mode == "100 Miler" and query:
         query = query.strip().lower()
         active_df = active_df[
@@ -161,7 +168,9 @@ def load_data(mode, query=""):
             "Status": status, "Total Miles": miles, "Race Time": "---" if is_inactive else t_disp,
             "Avg Speed": speed_val, "Expected": expected, "SortSeconds": t_sec, "Lap": lap if "Race" not in status else ""
         })
+    
     if not results: return pd.DataFrame()
+    
     full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSeconds'], ascending=[False, True])
     mask_rank = (~full_df['Status'].astype(str).str.contains("DNF|DNS|Race", na=False)) & (full_df['Total Miles'] > 0)
     full_df.loc[mask_rank, 'Pos'] = range(1, mask_rank.sum() + 1)
@@ -173,7 +182,6 @@ ctrl_col1, ctrl_col2 = st.columns([3, 1])
 with ctrl_col1:
     view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 
-# Search box logic
 search_query = ""
 if view_mode == "100 Miler":
     search_query = st.text_input("🔍 Search 100-Miler Name or Bib:", placeholder="Type name...")
@@ -206,4 +214,4 @@ try:
     elif search_query:
         st.warning(f"No results found for '{search_query}'")
 except Exception as e:
-    st.error(f"Syncing data... ({e})")
+    st.error(f"Waiting for race data to sync... ({e})")
