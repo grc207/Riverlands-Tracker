@@ -3,7 +3,7 @@ import pandas as pd
 import datetime
 import time
 
-# 1. Setup & Centered Styling
+# 1. Setup & Styling
 st.set_page_config(page_title="Riverlands 100 Live Leaderboard", layout="wide")
 
 st.markdown("""
@@ -16,9 +16,9 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# 2. Timing & Clock Logic
+# 2. Timing (UTC to EDT)
 utc_now = datetime.datetime.utcnow()
-now = utc_now - datetime.timedelta(hours=4) # UTC to EDT
+now = utc_now - datetime.timedelta(hours=4)
 
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 RACE_LIMIT_HOURS = 32
@@ -29,113 +29,77 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Logo & Title
-col1, col2, col3 = st.columns([1, 2, 1])
-with col2:
-    try: 
-        st.image("logo.jpg", use_container_width=True)
-    except: 
-        st.markdown("<h2 style='text-align: center;'>RIVERLANDS 100</h2>", unsafe_allow_html=True)
-
+# 3. Header & Clock
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
-# Display the Clock
 if now < START_TIME:
-    st.subheader(f"⏱️ {format_delta_hhh(START_TIME - now)}")
-    st.write("**Countdown to Race Start**")
+    st.subheader(f"⏱️ Countdown: {format_delta_hhh(START_TIME - now)}")
 else:
-    elapsed_diff = now - START_TIME
-    display_elapsed = min(elapsed_diff, datetime.timedelta(hours=RACE_LIMIT_HOURS))
-    st.subheader(f"⏱️ {format_delta_hhh(display_elapsed)}")
-    st.write("**Elapsed Race Time**")
+    elapsed = min(now - START_TIME, datetime.timedelta(hours=RACE_LIMIT_HOURS))
+    st.subheader(f"⏱️ Elapsed: {format_delta_hhh(elapsed)}")
 
-# 4. Core Logic: Data Processing
-# Keys match exactly what we see in IMG_4604.jpeg
+# 4. Station Logic (Matches IMG_4604.jpeg exactly)
 STATION_ORDER = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
-STATION_MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
-STATION_MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
+MILES_100 = {"Middle out": 4.5, "Conant Rd": 13.0, "Middle back": 20.5, "Arrive S/F": 25.0}
+MILES_RELAY = {"Middle out": 3.5, "Conant Rd": 10.5, "Middle back": 16.5, "Arrive S/F": 20.0}
 
 def calculate_metrics(row, mode):
-    m_map = STATION_MILES_100 if mode == "100 Miler" else STATION_MILES_RELAY
+    m_map = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
     max_miles = 0.0
-    last_station = ""
-    last_time_str = ""
-    current_loop = 1
+    last_st, last_time, current_lap = "", "", 1
     
-    # Iterate through every column in the row to find time data
+    # SCAN EVERY COLUMN: Avoids issues with "Middle out.1", "Middle out.2", etc.
     for col_name, val in row.items():
         val_str = str(val).strip()
         
-        # We only care about cells that look like a time (HH:MM)
+        # Look for a time format (HH:MM)
         if ":" in val_str:
             col_clean = str(col_name).strip().lower()
             
-            # Match the column header to our station list (Flexible matching)
-            matched_station = None
-            for station_key in m_map.keys():
-                if station_key.lower() in col_clean:
-                    matched_station = station_key
-                    break
+            # Identify which station this column belongs to
+            matched_st = next((s for s in m_map.keys() if s.lower() in col_clean), None)
             
-            if matched_station:
-                # Determine lap from Pandas suffix (e.g., "Middle out.1" -> Lap 2)
+            if matched_st:
+                # Determine lap from Pandas suffix (e.g., .1, .2)
                 parts = col_clean.split('.')
-                lap = 1
-                if len(parts) > 1 and parts[-1].isdigit():
-                    lap = int(parts[-1]) + 1
+                lap = int(parts[-1]) + 1 if len(parts) > 1 and parts[-1].isdigit() else 1
                 
-                dist = ((lap - 1) * loop_dist) + m_map[matched_station]
+                dist = ((lap - 1) * loop_dist) + m_map[matched_st]
                 
-                # If this time is further than what we've recorded, update status
                 if dist >= max_miles:
-                    max_miles = dist
-                    last_station = matched_station
-                    last_time_str = val_str
-                    current_loop = lap
+                    max_miles, last_st, last_time, current_lap = dist, matched_st, val_str, lap
 
-    # Return Logic
-    if now < START_TIME:
-        return "Awaiting Start", 0.0, "--", "0.0", "Middle out", 1, 0
+    if max_miles == 0: return "On Course", 0.0, "---", 0.0, "Middle out", 1, 0.1
+    if max_miles >= (max_loops * loop_dist): return "<b>FINISHED!</b>", max_miles, "---", 0.0, "---", max_loops, 999
+
+    speed = round(max_miles / ((now - START_TIME).total_seconds() / 3600), 1) if (now > START_TIME) else 0.0
+    next_st = STATION_ORDER[(STATION_ORDER.index(last_st) + 1) % len(STATION_ORDER)]
     
-    if max_miles == 0:
-        return "On Course", 0.0, "---", "0.0", "Middle out", 1, 0.1
+    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
+    return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-    if max_miles >= (max_loops * loop_dist):
-        return "<b>FINISHED!</b>", max_miles, "---", "---", "---", max_loops, 999
-
-    speed_mph = 0.0
-    hours_elapsed = (now - START_TIME).total_seconds() / 3600
-    if hours_elapsed > 0:
-        speed_mph = round(max_miles / hours_elapsed, 1)
-
-    next_idx = (STATION_ORDER.index(last_station) + 1) % len(STATION_ORDER)
-    next_st = STATION_ORDER[next_idx]
-    
-    status_html = f"<div class='status-box'>{last_station}<br><span class='time-sub'>{last_time_str}</span></div>"
-    return status_html, max_miles, last_time_str, speed_mph, next_st, current_loop, max_miles
-
-@st.cache_data(ttl=10)
+# 5. Data Loading with Cache Bypass
+@st.cache_data(ttl=15)
 def load_data(mode, query=""):
-    # The 't' parameter forces Google Sheets to bypass its internal 1-hour cache
-    t_stamp = int(time.time())
-    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={t_stamp}"
+    # Force Google to refresh by adding a dynamic timestamp to the URL
+    url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     
     try:
+        # Use skiprows=2 to bypass the 'Lap 1' merged header in IMG_4604.jpeg
         df = pd.read_csv(url, skiprows=2, dtype=str).fillna("")
         df.columns = [str(c).strip() for c in df.columns]
         
-        # Identify Bib and Name columns
         name_col = next((c for c in df.columns if "Team/Runner" in c), df.columns[0])
         bib_col = next((c for c in df.columns if "Bib" in c), df.columns[1])
         
-        df['_bib_num'] = pd.to_numeric(df[bib_col], errors='coerce')
-        df = df.dropna(subset=['_bib_num'])
+        df['_bib'] = pd.to_numeric(df[bib_col], errors='coerce')
+        df = df.dropna(subset=['_bib'])
         
-        # Filter by Relay (400s) or 100 Miler
-        is_relay = (df['_bib_num'] >= 400) & (df['_bib_num'] < 500)
+        # Relay vs 100 Miler filter
+        is_relay = (df['_bib'] >= 400) & (df['_bib'] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
         
         if query:
@@ -143,40 +107,36 @@ def load_data(mode, query=""):
             
         results = []
         for _, row in active_df.iterrows():
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics(row, mode)
+            status, miles, elapsed, speed, expected, lap, sort_val = calculate_metrics(row, mode)
             results.append({
-                "Pos": "", "Team/Runner": row[name_col], "Bib": str(int(row['_bib_num'])),
-                "Status": status, "Total Miles": miles, "Elapsed Time": elapsed,
-                "Speed": f"{speed} mph", "Expected": expected, "Loop": loop, "sort_val": sort_val
+                "Pos": "", "Team/Runner": row[name_col], "Bib": str(int(row['_bib'])),
+                "Status": status, "Miles": miles, "Speed": f"{speed} mph", 
+                "Next": expected, "Loop": lap, "sort_val": sort_val
             })
             
-        if not results: return pd.DataFrame()
-        
-        full_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
-        moving_mask = full_df['sort_val'] > 0.1
-        if moving_mask.any():
-            full_df.loc[moving_mask, 'Pos'] = range(1, moving_mask.sum() + 1)
+        final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
+        moving = final_df['sort_val'] > 0.1
+        if moving.any(): final_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
             
-        return full_df.drop(columns=['sort_val'])
+        return final_df.drop(columns=['sort_val'])
     except Exception as e:
-        st.error(f"Data Sync Error: {e}")
+        st.error(f"Sync Error: {e}")
         return pd.DataFrame()
 
-# 5. UI Layout
-view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
-search = st.text_input("🔍 Search Name or Bib:")
+# 6. UI & Automatic Refresh
+mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+search = st.text_input("🔍 Search Name:")
 
-if st.button("🔄 Force Refresh"):
+if st.button("🔄 Force Data Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-data = load_data(view_mode, search)
-
+data = load_data(mode, search)
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No participants found. Ensure the Google Sheet is published and Bib numbers are entered.")
+    st.info("No data found. Check Bib numbers and Google Sheet publication.")
 
-# Simple Auto-Refresh every 60 seconds
-time.sleep(60)
+# Auto-rerun every 30 seconds
+time.sleep(30)
 st.rerun()
