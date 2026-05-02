@@ -7,10 +7,9 @@ import io
 # 1. Setup & Branding
 st.set_page_config(page_title="Riverlands 100 Live Tracker", layout="wide")
 
-# Restore Logo and Header
+# Logo and Header Restoration
 col1, col2 = st.columns([1, 5])
 with col1:
-    # Pointing back to your local file
     st.image("logo.jpg", width=120)
 with col2:
     st.title("Riverlands 100 Live Tracker")
@@ -22,7 +21,7 @@ STATION_NAMES = ["Middle Out", "Conant Rd", "Middle Back", "Arrive S/F"]
 M_100 = [4.5, 13.0, 20.5, 25.0]
 M_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-# Column indices
+# Column indices for time entries
 MAP = {
     1: [6, 7, 8, 11],
     2: [12, 13, 14, 17],
@@ -32,6 +31,7 @@ MAP = {
 }
 
 def clean_time_to_minutes(val):
+    """Parse 'HH:MM' into minutes since 6:00 AM."""
     try:
         val = str(val).strip().upper()
         if not any(c.isdigit() for c in val): return None
@@ -40,7 +40,7 @@ def clean_time_to_minutes(val):
         ts = pd.to_datetime(val).time()
         dt = datetime.datetime(2026, 5, 2, ts.hour, ts.minute)
         
-        if ts.hour < 6: 
+        if ts.hour < 6: # Handle Sunday morning times
             dt += datetime.timedelta(days=1)
             
         return int((dt - START_TIME).total_seconds() // 60)
@@ -52,9 +52,9 @@ def get_runner_data(row, mode):
     loop_size = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
-    # Start values
     best_dist, best_time_str, best_time_mins, best_stat, best_loop = 0.0, "---", 0, "Start", 1
     
+    # SEQUENTIAL LOCK: Process laps in order
     for lap in range(1, max_loops + 1):
         lap_cols = MAP[lap]
         lap_found = False
@@ -69,8 +69,6 @@ def get_runner_data(row, mode):
                     best_stat = STATION_NAMES[i]
                     best_loop = lap
                     lap_found = True
-        
-        # Sequential Lock: Stop if no data in this lap
         if not lap_found:
             break
             
@@ -85,8 +83,8 @@ def load():
 
 df = load()
 
-# Selector
-view = st.radio("Race Category:", ["100 Miler", "Relay"], horizontal=True)
+# PAGE TOGGLE: Radio button to switch views
+view = st.radio("Select Race to View:", ["100 Miler", "Relay"], horizontal=True)
 
 results = []
 for i in range(len(df)):
@@ -96,18 +94,15 @@ for i in range(len(df)):
     
     if bib.isdigit() and len(name) > 1:
         b_val = int(bib)
-        # Relay bibs are 400s
-        is_relay_runner = 400 <= b_val < 500
+        is_relay_bib = 400 <= b_val < 500
         
-        # Filter based on toggle
-        if (view == "Relay" and is_relay_runner) or (view == "100 Miler" and not is_relay_runner):
+        # Only process data for the currently selected view
+        if (view == "Relay" and is_relay_bib) or (view == "100 Miler" and not is_relay_bib):
             miles, stat, t_str, t_mins, loop = get_runner_data(row, view)
             
-            # MPH Calculation
+            # Calculations
             mph = round(miles / (t_mins / 60), 1) if t_mins > 0 else 0.0
-            
-            # Race Time (Clock) Calculation
-            r_time_clock = f"{t_mins // 60}h {t_mins % 60}m" if t_mins > 0 else "0h 0m"
+            r_time = f"{t_mins // 60}h {t_mins % 60}m" if t_mins > 0 else "0h 0m"
             
             # Expected Next
             exp_html = "---"
@@ -126,11 +121,8 @@ for i in range(len(df)):
             results.append({
                 "Pos": 0, "Name": name, "Bib": bib, "Miles": miles,
                 "Status": f"<b>{stat}</b><br>{t_str}",
-                "Expected": exp_html, 
-                "MPH": mph, 
-                "Race Time": r_time_clock, 
-                "Loop": loop, 
-                "sort": (miles * 10000) - t_mins
+                "Expected": exp_html, "MPH": mph, "Race Time": r_time, 
+                "Loop": loop, "sort": (miles * 10000) - t_mins
             })
 
 # 4. Display Table
@@ -140,12 +132,11 @@ if results:
     display_cols = ["Pos", "Name", "Bib", "Miles", "Status", "Expected", "MPH", "Race Time", "Loop"]
     st.write(f_df[display_cols].to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.write("No data found for this category.")
+    st.info(f"No active runners found for the {view} category.")
 
 # 5. Disclaimer
 st.markdown("---")
 st.caption("""
-**Disclaimer:** This tracker is a community-led project and is NOT the official timing system. 
-Data is synced from manual entries at aid stations; delays or errors may occur due to connectivity. 
-Always refer to official race officials for final standings.
+**Disclaimer:** This tracker is unofficial. Data is synced from manual aid station entries; 
+delays or errors may occur. Refer to official race staff for final results.
 """)
