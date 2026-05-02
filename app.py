@@ -11,11 +11,12 @@ st.set_page_config(page_title="Riverlands 100 Live", layout="wide")
 
 st.markdown("""
     <style>
-    th { text-align: center !important; background-color: #f2f2f2; }
+    th { text-align: center !important; background-color: #f2f2f2; font-size: 0.9em; }
     td { text-align: center !important; border-bottom: 1px solid #ddd; vertical-align: middle !important; }
     td:nth-child(2) { text-align: left !important; font-weight: bold; min-width: 150px;}
     .status-box { line-height: 1.2; font-weight: bold; color: #1e3a8a; }
-    .time-sub { font-size: 0.85em; color: #666; font-weight: normal; }
+    .expected-box { line-height: 1.2; font-weight: bold; color: #065f46; }
+    .sub-text { font-size: 0.85em; color: #666; font-weight: normal; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -28,7 +29,7 @@ STATION_NAMES = ["Middle Out", "Conant Rd", "Middle Back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-# Mapping strictly to your coordinates
+# Mapping based on your provided coordinates
 STATION_MAP = {
     (1, 0): 6,  (1, 1): 7,  (1, 2): 8,  (1, 3): 11,
     (2, 0): 12, (2, 1): 13, (2, 2): 14, (2, 3): 17,
@@ -47,9 +48,9 @@ def calculate_metrics(row, mode):
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
-    max_miles, last_st, last_time, current_lap = 0.0, "Start", "---", 1
+    max_miles, last_st, last_time_str, current_lap = 0.0, "Start", "6:00 AM", 0
     
-    # SCAN ALL: Find the absolute furthest data point available
+    # 1. Find Furthest Point
     for lap in range(1, max_loops + 1):
         for i in range(4):
             col_idx = STATION_MAP.get((lap, i))
@@ -58,30 +59,48 @@ def calculate_metrics(row, mode):
                 if is_valid_time(val):
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
-                        max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
+                        max_miles, last_st, last_time_str, current_lap = dist, STATION_NAMES[i], val, lap
+
+    # 2. Calculate MPH & Race Time
+    # We use current wall-clock time vs Start Time for the speed calculation
+    total_elapsed_td = (now - START_TIME)
+    total_elapsed_hours = total_elapsed_td.total_seconds() / 3600
+    
+    # Speed is purely Distance / Time since 6:00 AM
+    speed = max_miles / total_elapsed_hours if total_elapsed_hours > 0 else 0
+    
+    # Race Time String (HH:MM)
+    total_minutes = int(total_elapsed_td.total_seconds() // 60)
+    race_time_str = f"{total_minutes // 60}h {total_minutes % 60}m"
 
     if max_miles == 0:
-        return "On Course", 0.0, STATION_NAMES[0], "---", 0.1
-    
-    elapsed = (now - START_TIME).total_seconds() / 3600
-    speed = max_miles / elapsed if elapsed > 0 else 0
-    
+        return "On Course", 0.0, "0.0", f"Middle Out<br><span class='sub-text'>---</span>", race_time_str, 0.1
+
+    # 3. Predict Next Station
     curr_idx = STATION_NAMES.index(last_st)
     next_idx = (curr_idx + 1) % 4
-    next_st = STATION_NAMES[next_idx]
+    next_st_name = STATION_NAMES[next_idx]
     l_idx = current_lap + 1 if (next_idx == 0 and curr_idx == 3) else current_lap
     next_dist = ((l_idx - 1) * loop_dist) + m_list[next_idx]
     
-    expected = "---"
+    expected_time_str = "---"
     if speed > 0 and max_miles < (max_loops * loop_dist):
-        eta_delta = (next_dist - max_miles) / speed
-        expected = (now + datetime.timedelta(hours=eta_delta)).strftime("%-I:%M %p")
+        hours_to_next = (next_dist - max_miles) / speed
+        eta = now + datetime.timedelta(hours=hours_to_next)
+        expected_time_str = eta.strftime("%-I:%M %p")
 
-    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
-    if max_miles >= (max_loops * loop_dist):
-        status = "<b>FINISHED!</b>"
+    # 4. Format HTML Outputs
+    status_html = f"<div class='status-box'>{last_st}<br><span class='sub-text'>{last_time_str}</span></div>"
+    expected_html = f"<div class='expected-box'>{next_st_name}<br><span class='sub-text'>{expected_time_str}</span></div>"
     
-    return status, max_miles, next_st, expected, max_miles
+    if max_miles >= (max_loops * loop_dist):
+        status_html = "<b>FINISHED!</b>"
+        expected_html = "---"
+
+    # Sorting Value: Miles + (1 - normalized time) to reward faster runners at same distance
+    sort_val = max_miles + (1 / (total_elapsed_hours + 1))
+
+    return status_html, max_miles, f"{speed:.1f}", expected_html, race_time_str, sort_val
 
 # 3. Data Loader
 @st.cache_data(ttl=0)
@@ -111,33 +130,31 @@ if raw_df is not None:
             st.rerun()
 
     results = []
-    # Loop starts at 3, but let's be safe and check if the name is actually a string
     for i in range(len(raw_df)):
         row = raw_df.iloc[i]
         try:
-            name = str(row.iloc[0]).strip()
-            bib_str = str(row.iloc[1]).strip()
-            
-            # Skip header rows and empty rows
-            if not bib_str.isdigit() or len(name) < 2: 
-                continue
+            name, bib_str = str(row.iloc[0]).strip(), str(row.iloc[1]).strip()
+            if not bib_str.isdigit() or len(name) < 2: continue
             
             bib = int(bib_str)
             is_relay = 400 <= bib < 500
             
             if (view_mode == "Relay") == is_relay:
-                status, miles, n_st, n_time, s_val = calculate_metrics(row, view_mode)
+                status, miles, mph, expected, race_time, s_val = calculate_metrics(row, view_mode)
                 results.append({
                     "Pos": 0, "Name": name, "Bib": bib, 
-                    "Last Seen": status, "Miles": miles, 
-                    "Next": n_st, "Expected": n_time, 
-                    "sort_val": s_val
+                    "Status (Last Seen)": status, "Miles": miles, 
+                    "MPH": mph, "Expected Next": expected, 
+                    "Race Time": race_time, "sort_val": s_val
                 })
         except: continue
 
     if results:
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         final_df['Pos'] = range(1, len(final_df) + 1)
-        st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
+        
+        # Reorder columns for better flow
+        display_cols = ["Pos", "Name", "Bib", "Miles", "Status (Last Seen)", "Expected Next", "MPH", "Race Time"]
+        st.write(final_df[display_cols].to_html(escape=False, index=False), unsafe_allow_html=True)
     else:
         st.warning("No runners found. Check if the spreadsheet is published.")
