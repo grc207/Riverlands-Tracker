@@ -63,57 +63,67 @@ def calculate_metrics_positional(row, bib_idx, mode):
     next_st = STATIONS[(STATIONS.index(last_st) + 1) % 4]
     return f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>", max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loading
-@st.cache_data(ttl=15)
+# 4. Data Loading - Strict Positional Version
+@st.cache_data(ttl=10)
 def load_data(mode, query=""):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     
     try:
-        # Load raw
+        # Load raw without headers first to avoid naming collisions
         raw_df = pd.read_csv(url, header=None, dtype=str).fillna("")
         
-        # Search for Header Row containing "Bib"
+        # Step 1: Find Header Row
         header_idx = 0
         for i, row in raw_df.iterrows():
             if any("bib" in str(cell).lower() for cell in row):
                 header_idx = i
                 break
         
-        headers = [str(c).strip() for c in raw_df.iloc[header_idx]]
-        df = raw_df.iloc[header_idx+1:].copy()
-        df.columns = headers
+        # Step 2: Identify Key Column Indices
+        headers = [str(c).strip().lower() for c in raw_df.iloc[header_idx]]
         
-        # 1. Identify FIRST Bib Column Index
-        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h.lower()), -1)
+        # Find first Bib column index
+        bib_idx = -1
+        for i, h in enumerate(headers):
+            if "bib" in h:
+                bib_idx = i
+                break
         
-        # 2. Identify Name/Team Column (Looking specifically for "name" or "team" to the left)
+        # Find Name/Team column index (look left of Bib)
         name_idx = -1
         for i in range(bib_idx - 1, -1, -1):
-            h_lower = headers[i].lower()
-            if "name" in h_lower or "team" in h_lower or "runner" in h_lower:
+            if any(word in headers[i] for word in ["name", "team", "runner"]):
                 name_idx = i
                 break
-        # Fallback to bib_idx - 1 if no name header found
         if name_idx == -1: name_idx = max(0, bib_idx - 1)
-        
+
         if bib_idx == -1:
-            st.error("Could not locate 'Bib' column.")
+            st.error("Could not find Bib column.")
             return pd.DataFrame()
-            
-        # Fix for IMG_4605.jpeg error: pass only the specific column string name
-        bib_col_name = headers[bib_idx]
-        df['_bib_clean'] = pd.to_numeric(df[bib_col_name], errors='coerce')
-        df = df.dropna(subset=['_bib_clean'])
+
+        # Step 3: Process Data Rows
+        data_rows = raw_df.iloc[header_idx+1:].copy()
         
-        # Filter Category
+        # STRICTOR NUMERIC CONVERSION: Avoids "arg must be a list"
+        # Use iloc to target the specific column index directly
+        bib_series = pd.to_numeric(data_rows.iloc[:, bib_idx], errors='coerce')
+        data_rows['_bib_clean'] = bib_series
+        
+        # Drop rows with no valid Bib
+        df = data_rows.dropna(subset=['_bib_clean']).copy()
+        
+        # Step 4: Category Filtering
         is_relay = (df['_bib_clean'] >= 400) & (df['_bib_clean'] < 500)
-        active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
+        active_df = df[is_relay] if mode == "Relay" else df[~is_relay]
         
+        # Search Filter
         if query:
             active_df = active_df[active_df.iloc[:, name_idx].str.contains(query, case=False, na=False)]
             
+        # Step 5: Metric Calculation
         results = []
         for _, row in active_df.iterrows():
+            # Use positional logic for station times
             status, miles, elapsed, speed, expected, lap, sort_val = calculate_metrics_positional(row, bib_idx, mode)
             results.append({
                 "Pos": "", 
@@ -123,6 +133,8 @@ def load_data(mode, query=""):
                 "Next": expected, "Loop": lap, "sort_val": sort_val
             })
             
+        if not results: return pd.DataFrame()
+
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         moving = final_df['sort_val'] > 0.1
         if moving.any(): final_df.loc[moving, 'Pos'] = range(1, moving.sum() + 1)
@@ -137,22 +149,22 @@ def load_data(mode, query=""):
 st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1>", unsafe_allow_html=True)
 
 if now > START_TIME:
-    elapsed_time = now - START_TIME
-    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(elapsed_time)}")
+    st.subheader(f"⏱️ Race Clock: {format_delta_hhh(now - START_TIME)}")
 
-mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
+view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search = st.text_input("🔍 Search Name:")
 
 if st.button("🔄 Force Refresh"):
     st.cache_data.clear()
     st.rerun()
 
-data = load_data(mode, search)
+data = load_data(view_mode, search)
 
 if not data.empty:
     st.write(data.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("Loading live data...")
+    st.info("Loading live data from source...")
 
-time.sleep(30)
+# Auto-refresh logic
+time.sleep(20)
 st.rerun()
