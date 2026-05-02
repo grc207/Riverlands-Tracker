@@ -19,7 +19,7 @@ st.markdown("<h1 style='text-align: center;'>Riverlands 100 Live Leaderboard</h1
 st.info("**Disclaimer:** This is an independent project and is not maintained by the race director. "
         "All information may not be timely or accurate.")
 
-# 3. Timezone Logic
+# 3. Timezone Logic (UTC to EDT)
 utc_now = datetime.datetime.utcnow()
 now = utc_now - datetime.timedelta(hours=4) 
 START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
@@ -54,7 +54,6 @@ def get_status(row, mode, global_has_data):
         return "Race starts May 2nd @ 6am", 0.0, "---", 999999, "---"
 
     max_miles, furthest_station, last_time_str = 0.0, "", ""
-    # Only look for times in the row
     for col_name, val in row.items():
         val_str = str(val).strip().lower()
         if ":" in val_str:
@@ -62,14 +61,16 @@ def get_status(row, mode, global_has_data):
             if "Start/Finish" in base_header: base_header = "Arrive S/F"
             if base_header in m_map:
                 try:
-                    # Detect lap from the .1, .2 suffix Google adds to duplicate headers
                     lap_num = int(col_name.split('.')[-1]) + 1 if "." in col_name else 1
                 except: lap_num = 1
                 calc_miles = ((lap_num - 1) * loop_dist) + m_map[base_header]
                 if calc_miles >= max_miles:
                     max_miles, furthest_station, last_time_str = calc_miles, base_header, val_str
 
-    if "dnf" in " ".join(row.astype(str)).lower(): 
+    # FIX: Ensure all row items are strings before joining to avoid the "float found" error
+    row_text = " ".join(map(str, row.values)).lower()
+    
+    if "dnf" in row_text: 
         return "DNF", max_miles, "---", 999999, "---"
     if max_miles >= total_race_dist: 
         return "Finished!", total_race_dist, "---", 0, "N/A"
@@ -82,34 +83,30 @@ def get_status(row, mode, global_has_data):
 def load_data(mode, query=""):
     url = "https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv"
     try:
-        # Load the raw CSV
         df = pd.read_csv(url)
         df.columns = [str(c).strip() for c in df.columns]
         
-        # POSITIONAL SELECTION: 
-        # Column 0 is always the Team/Runner name
-        # Column 1 is always the Bib
+        # Position-based column selection
         name_col_name = df.columns[0]
         bib_col_name = df.columns[1]
 
-        # Clean Bibs to ensure they are numbers
+        # Clean Bibs
         df[bib_col_name] = pd.to_numeric(df[bib_col_name], errors='coerce')
-        
-        # Filter: Only rows that have a valid Bib number
         df = df[df[bib_col_name].notna()]
 
-        # Filter: Relay is 400-499
+        # Filter by Bib Range
         is_relay = (df[bib_col_name] >= 400) & (df[bib_col_name] < 500)
         active_df = df[is_relay].copy() if mode == "Relay" else df[~is_relay].copy()
 
-        # Final check: Remove any row where the name is literally "Runner", "Team", or "Status"
+        # Final check for valid names
+        active_df = active_df[active_df[name_col_name].notna()]
         active_df = active_df[~active_df[name_col_name].astype(str).str.lower().isin(['runner', 'team', 'status'])]
 
         if query:
             active_df = active_df[active_df[name_col_name].astype(str).str.contains(query, case=False) | 
                                   active_df[bib_col_name].astype(str).str.contains(query)]
 
-        # Check for any timestamps (":") to see if race data is live
+        # Check for live data
         global_has_data = active_df.astype(str).apply(lambda x: x.str.contains(":")).any().any()
 
         results = []
@@ -129,8 +126,6 @@ def load_data(mode, query=""):
         if not results: return pd.DataFrame()
 
         full_df = pd.DataFrame(results).sort_values(by=['Total Miles', 'SortSec'], ascending=[False, True])
-        
-        # Positioning for runners with mileage
         mask = (full_df['Total Miles'] > 0) & (~full_df['Status'].str.contains("Not Started|Race"))
         full_df.loc[mask, 'Pos'] = range(1, mask.sum() + 1)
         full_df.loc[~mask, 'Pos'] = ""
