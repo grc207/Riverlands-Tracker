@@ -29,27 +29,30 @@ def format_delta_hhh(delta):
     minutes, _ = divmod(remainder, 60)
     return f"{hours}h {minutes:02d}m"
 
-# 3. Position Logic
+# 3. Race Configuration
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
-def calculate_metrics_positional(row, bib_idx, mode):
+def calculate_metrics_dynamic(row, station_map, mode):
+    """
+    station_map is a dict: {(loop_num, station_name): col_index}
+    """
     m_list = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
+    
     max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
     
     for lap in range(1, max_loops + 1):
-        start_search_idx = (bib_idx + 1) + ((lap - 1) * 5)
-        for i in range(4):
-            col_idx = start_search_idx + i
-            if col_idx < len(row):
+        for i, st_name in enumerate(STATION_NAMES):
+            col_idx = station_map.get((lap, st_name.lower()))
+            if col_idx is not None and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
                 if ":" in val:
                     dist = ((lap - 1) * loop_dist) + m_list[i]
                     if dist >= max_miles:
-                        max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
+                        max_miles, last_st, last_time, current_lap = dist, st_name, val, lap
 
     if max_miles == 0:
         return "On Course", 0.0, "---", 0.0, STATION_NAMES[0], 1, 0.1
@@ -61,29 +64,51 @@ def calculate_metrics_positional(row, bib_idx, mode):
     status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{last_time}</span></div>"
     return status, max_miles, last_time, speed, next_st, current_lap, max_miles
 
-# 4. Data Loader with Verification Mode
+# 4. Data Loader
 @st.cache_data(ttl=10)
 def load_raw_data():
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={int(time.time())}"
     try:
         response = requests.get(url, timeout=10)
         response.encoding = 'utf-8'
-        # Read everything as raw text to avoid the dtype 'str' error
-        return pd.read_csv(io.StringIO(response.text), skiprows=2, header=None, dtype=str, na_filter=False)
+        return pd.read_csv(io.StringIO(response.text), header=None, dtype=str, na_filter=False)
     except Exception as e:
-        st.error(f"Failed to fetch Google Sheet: {e}")
+        st.error(f"Sync Error: {e}")
         return None
 
 def process_leaderboard(df_raw, mode, query=""):
-    if df_raw is None or df_raw.empty:
-        return pd.DataFrame()
+    if df_raw is None or df_raw.empty: return pd.DataFrame()
         
     try:
-        headers = df_raw.iloc[0].tolist()
-        bib_idx = next((i for i, h in enumerate(headers) if h and "bib" in str(h).lower()), 1)
-        name_idx = next((i for i, h in enumerate(headers) if h and ("team" in str(h).lower() or "runner" in str(h).lower())), 0)
+        # A. Find Header Row & Column Indices
+        header_row_idx = 0
+        for i in range(min(10, len(df_raw))):
+            if "bib" in [str(x).lower() for x in df_raw.iloc[i]]:
+                header_row_idx = i
+                break
+        
+        headers = [str(h).lower().strip() for h in df_raw.iloc[header_row_idx].tolist()]
+        bib_idx = next((i for i, h in enumerate(headers) if "bib" in h), 1)
+        name_idx = next((i for i, h in enumerate(headers) if any(x in h for x in ["runner", "team", "name"])), 0)
 
-        df = df_raw.iloc[1:].copy()
+        # B. Map Station Names to Columns (Search for "Middle out", etc.)
+        # This scans the headers to find which column corresponds to which station/lap
+        station_map = {}
+        current_scanning_lap = 1
+        last_found_st_idx = -1
+        
+        for lap in range(1, 6): # Support up to 5 laps
+            for st_name in STATION_NAMES:
+                target = st_name.lower()
+                # Search for the station name appearing AFTER the last one we found
+                for col_idx in range(last_found_st_idx + 1, len(headers)):
+                    if target in headers[col_idx]:
+                        station_map[(lap, target)] = col_idx
+                        last_found_st_idx = col_idx
+                        break
+
+        # C. Process Rows
+        df = df_raw.iloc[header_row_idx+1:].copy()
         df['_bib_num'] = pd.to_numeric(df.iloc[:, bib_idx], errors='coerce')
         df = df.dropna(subset=['_bib_num'])
         
@@ -95,7 +120,7 @@ def process_leaderboard(df_raw, mode, query=""):
             
         results = []
         for _, row in active_df.iterrows():
-            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_positional(row, bib_idx, mode)
+            status, miles, elapsed, speed, expected, loop, sort_val = calculate_metrics_dynamic(row, station_map, mode)
             results.append({
                 "Pos": "", "Team/Runner": row.iloc[name_idx], "Bib": str(int(row['_bib_num'])),
                 "Status": status, "Miles": miles, "Speed": f"{speed} mph", 
@@ -123,23 +148,13 @@ if now > START_TIME:
 view_mode = st.radio("Category:", ["100 Miler", "Relay"], horizontal=True)
 search_input = st.text_input("🔍 Search Name:")
 
-# LOAD DATA
 df_raw = load_raw_data()
 leaderboard_df = process_leaderboard(df_raw, view_mode, search_input)
 
 if not leaderboard_df.empty:
     st.write(leaderboard_df.to_html(escape=False, index=False), unsafe_allow_html=True)
 else:
-    st.info("No active runners found matching criteria.")
-
-# VERIFICATION / DEBUG SECTION
-st.divider()
-if st.checkbox("🛠️ Show Debug: Raw Data Check"):
-    if df_raw is not None:
-        st.write("First 10 rows of the raw spreadsheet (to verify connection):")
-        st.dataframe(df_raw.head(10))
-    else:
-        st.warning("Data check failed. No spreadsheet found.")
+    st.info("Waiting for race data to be entered...")
 
 if st.button("🔄 Refresh"):
     st.cache_data.clear()
