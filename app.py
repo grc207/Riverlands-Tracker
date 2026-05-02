@@ -26,50 +26,49 @@ START_TIME = datetime.datetime(2026, 5, 2, 6, 0, 0)
 
 STATION_NAMES = ["Middle out", "Conant Rd", "Middle back", "Arrive S/F"]
 
-# Updated STATION_MAP based on your sheet layout
+# Strict Mapping based on IMG_4613.jpg
+# Col 0: Name, Col 1: Bib
 STATION_MAP = {
-    (1, 0): 2, (1, 1): 3, (1, 2): 4, (1, 3): 5,   # Lap 1
-    (2, 0): 6, (2, 1): 7, (2, 2): 8, (2, 3): 9,   # Lap 2
-    (3, 0): 11, (3, 1): 12, (3, 2): 13, (3, 3): 14, # Lap 3 (Following your sheet's column shift)
-    (4, 0): 16, (4, 1): 17, (4, 2): 18, (4, 3): 19  # Lap 4
+    (1, 0): 2, (1, 1): 3, (1, 2): 4, (1, 3): 5,   # Lap 1: Cols 2,3,4,5
+    (2, 0): 6, (2, 1): 7, (2, 2): 8, (2, 3): 9,   # Lap 2: Cols 6,7,8,9
+    (3, 0): 11, (3, 1): 12, (3, 2): 13, (3, 3): 14, # Lap 3: Cols 11,12,13,14 (Skips 10)
+    (4, 0): 16, (4, 1): 17, (4, 2): 18, (4, 3): 19  # Lap 4: Cols 16,17,18,19 (Skips 15)
 }
 
 MILES_100 = [4.5, 13.0, 20.5, 25.0]
 MILES_RELAY = [3.5, 10.5, 16.5, 20.0]
 
 def is_valid_time(val):
-    """Only returns True if the cell looks like a time (e.g. 10:15 or 9:00 AM)"""
-    if not val or len(val) < 3:
+    """Validates if the cell contains a timestamp (HH:MM)"""
+    if not val or len(str(val)) < 3:
         return False
-    # Regex to look for digits separated by a colon
-    return bool(re.search(r'\d+:\d+', val))
+    return bool(re.search(r'\d+:\d+', str(val)))
 
 def calculate_metrics(row, mode):
     m_list = MILES_100 if mode == "100 Miler" else MILES_RELAY
     loop_dist = 25.0 if mode == "100 Miler" else 20.0
     max_loops = 4 if mode == "100 Miler" else 5
     
-    max_miles, last_st, last_time, current_lap = 0.0, "", "", 1
+    max_miles, last_st, last_time, current_lap = 0.0, "Start", "6:00 AM", 1
     
-    # Scan from Lap 1 forward
+    # Check Laps sequentially. A runner cannot be on Lap 3 if Lap 2 "Arrive S/F" is empty.
     for lap in range(1, max_loops + 1):
+        lap_has_data = False
         for i in range(4):
             col_idx = STATION_MAP.get((lap, i))
-            if col_idx is not None and col_idx < len(row):
+            if col_idx and col_idx < len(row):
                 val = str(row.iloc[col_idx]).strip()
-                
-                # CRITICAL FIX: Only accept the data if it looks like a timestamp
                 if is_valid_time(val):
                     dist = ((lap - 1) * loop_dist) + m_list[i]
-                    # We update only if this data point is actually further along
-                    if dist >= max_miles:
-                        max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
+                    max_miles, last_st, last_time, current_lap = dist, STATION_NAMES[i], val, lap
+                    lap_has_data = True
+        
+        # If this lap had no data, stop looking at future laps
+        if not lap_has_data:
+            break
 
     if max_miles == 0:
         return "On Course", 0.0, STATION_NAMES[0], "---", 0.1
-    
-    if max_miles >= (max_loops * loop_dist):
-        return "<b>FINISHED!</b>", max_miles, "---", "---", 999
     
     # MPH Calculation
     elapsed_hours = (now - START_TIME).total_seconds() / 3600
@@ -80,18 +79,22 @@ def calculate_metrics(row, mode):
     next_idx = (curr_idx + 1) % 4
     next_st = STATION_NAMES[next_idx]
     
-    next_dist = ((current_lap - 1) * loop_dist) + m_list[next_idx]
+    l_idx = current_lap
     if next_idx == 0 and curr_idx == 3:
-        next_dist = (current_lap * loop_dist) + m_list[0]
+        l_idx += 1 # Moving to next lap
+        
+    next_dist = ((l_idx - 1) * loop_dist) + m_list[next_idx]
     
     expected_str = "---"
-    if speed > 0:
+    if speed > 0 and max_miles < (max_loops * loop_dist):
         hours_to_next = (next_dist - max_miles) / speed
         expected_str = (now + datetime.timedelta(hours=hours_to_next)).strftime("%-I:%M %p")
 
-    # Clean the display time for the status box
-    display_time = last_time.split(" ")[-1] if " " in last_time else last_time
-    status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{display_time}</span></div>"
+    if max_miles >= (max_loops * loop_dist):
+        status = "<b>FINISHED!</b>"
+    else:
+        display_time = last_time.split(" ")[-1] if " " in last_time else last_time
+        status = f"<div class='status-box'>{last_st}<br><span class='time-sub'>{display_time}</span></div>"
     
     return status, max_miles, next_st, expected_str, max_miles
 
@@ -101,7 +104,7 @@ def load_raw_data(buster):
     url = f"https://docs.google.com/spreadsheets/d/e/2PACX-1vQZs0na1nSuQDRDPPHmhBLRsKW7NZ7y60cC_GdfvNdVmD6uO9y3l6jMBV12SrEP2q2GE_ZQxnHaHUhn/pub?gid=503644022&single=true&output=csv&t={buster}"
     try:
         response = requests.get(url, timeout=15)
-        # Skip top 3 rows to land on actual runner data
+        # We use skiprows=3 to bypass the title and header noise
         return pd.read_csv(io.StringIO(response.text), skiprows=3, header=None, dtype=str)
     except:
         return None
@@ -130,8 +133,7 @@ if df_runners is not None:
             name = str(row.iloc[0]).strip()
             bib_str = str(row.iloc[1]).strip()
             
-            # Ensure name and bib are valid
-            if not bib_str.isdigit() or name.lower() in ["nan", "name", ""]: 
+            if not bib_str.isdigit() or name.lower() in ["nan", ""]: 
                 continue
             
             bib = int(bib_str)
@@ -151,7 +153,5 @@ if df_runners is not None:
         final_df = pd.DataFrame(results).sort_values(by=['sort_val', 'Bib'], ascending=[False, True])
         final_df['Pos'] = range(1, len(final_df) + 1)
         st.write(final_df.drop(columns=['sort_val']).to_html(escape=False, index=False), unsafe_allow_html=True)
-        
-        st.markdown(f"<div style='text-align:center; color:grey; font-size:0.8em; margin-top:20px;'>Last Refresh: {now.strftime('%H:%M:%S')} EDT</div>", unsafe_allow_html=True)
     else:
-        st.info("No runners found for this category. Click Refresh to check again.")
+        st.info("No active runners found. Click Refresh to update.")
